@@ -1,0 +1,14 @@
+LIBRARY pbpacket-tests
+EXPORTS
+    PbPlanSegments
+    PbWriteSegment
+    PbWriteSegmentBatch
+    PbWriteSegmentChecked
+    PbWriteSegmentBatchChecked
+    PbFinalizeChecksums
+    PbCoalesceBegin
+    PbCoalesceAppend
+    PbCoalesceFinish
+    PbEthernetInspect
+    PbEthernetControl
+    PbEthernetHeader

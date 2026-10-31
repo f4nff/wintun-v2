@@ -1,0 +1,7 @@
+LIBRARY packetbridge
+EXPORTS
+    PbGetInterfaceV2
+    PbGetLifecycleInterface
+    PbGetPacketInterface
+    PbCreateAdapterEx
+    PbCreateAdapterEx2

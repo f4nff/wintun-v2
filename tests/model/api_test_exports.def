@@ -1,0 +1,19 @@
+LIBRARY pbapi-testshim
+EXPORTS
+    PbGetInterfaceV2
+    PbGetLifecycleInterface
+    PbGetPacketInterface
+    PbCreateAdapterEx
+    PbCreateAdapterEx2
+    PbTestOpen
+    PbTestActive
+    PbTestFault
+    PbTestWaiters
+    PbTestSend
+    PbTestTake
+    PbTestComplete
+    PbTestBlock
+    PbTestQueries
+    PbTestRetained
+    PbTestFail
+    PbTestBoundaryThread
