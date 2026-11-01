@@ -71,7 +71,7 @@ fn named_adapter_report_preserves_old_prefix_and_identifies_native_failure_api()
     assert!(text.contains("recovery_api=DiUninstallDriverW") && text.contains("matched_devices=2") &&
         text.contains("observed_source=aaaaaaaa") && text.contains("0xc0000428"));
 }
-fn fixture() -> Session {
+fn fixture_with_config(config: Config) -> Session {
     let path = std::env::var_os("PB_TEST_DLL")
         .expect("build Tests first; PB_TEST_DLL must name pbapi-testshim.dll");
     let library = unsafe { Library::load(Path::new(&path)) }.unwrap();
@@ -83,12 +83,7 @@ fn fixture() -> Session {
         *mut u64,
     ) -> u32;
     let open: Open = unsafe { symbol(&library, c"PbTestOpen") };
-    let config = Config {
-        slots: 2,
-        ring_capacity: 2,
-        ..Config::default()
-    }
-    .raw();
+    let config = config.raw();
     let (mut native, mut region, mut epoch) = (ptr::null_mut(), ptr::null_mut(), 0);
     let mut layout = raw::Layout::default();
     assert_eq!(
@@ -97,6 +92,56 @@ fn fixture() -> Session {
     );
     assert_eq!(layout.region_size as usize % 4096, 0);
     Session::adopt(library, native).unwrap()
+}
+fn fixture() -> Session {
+    fixture_with_config(Config {
+        queues: 1,
+        slots: 2,
+        ring_capacity: 2,
+        ..Config::default()
+    })
+}
+#[test]
+fn throughput_defaults_support_64_object_ffi_batches_and_keep_segment_limit_separate() {
+    let config = Config::default();
+    assert_eq!((config.queues, config.slots, config.ring_capacity), (4, 256, 512));
+    assert_eq!((raw::MAX_BATCH, raw::MAX_SEGMENT_BATCH), (64, 32));
+    let mut session = fixture_with_config(config);
+    assert_eq!(session.queue_count(), 4);
+    type Take = unsafe extern "C" fn(raw::Native, u32, *mut raw::Descriptor, u32, *mut u32) -> u32;
+    type Complete = unsafe extern "C" fn(raw::Native, u32, *const raw::Descriptor, u32) -> u32;
+    let take: Take = unsafe { symbol(&session.library, c"PbTestTake") };
+    let complete: Complete = unsafe { symbol(&session.library, c"PbTestComplete") };
+    for qi in 0..4 {
+        let q = session.queue(qi).unwrap();
+        assert!(matches!(q.reserve(65), Err(Error(1))));
+        assert!(matches!(q.receive(65), Err(Error(1))));
+        let mut reserved = q.reserve(64).unwrap();
+        assert_eq!(reserved.len(), 64);
+        for i in 0..64 {
+            reserved.data_mut(i).unwrap()[..20].fill(i as u8);
+            reserved.set_length(i, 20).unwrap();
+        }
+        assert_eq!(reserved.commit().unwrap(), 64);
+        drop(reserved);
+        let mut descriptors = [raw::Descriptor::default(); 64];
+        let mut count = 0;
+        assert_eq!(unsafe { take(session.pointer().unwrap(), qi, descriptors.as_mut_ptr(), 64, &mut count) }, 0);
+        assert_eq!(count, 64);
+        descriptors.reverse();
+        assert_eq!(unsafe { complete(session.pointer().unwrap(), qi, descriptors.as_ptr(), 64) }, 0);
+        assert_eq!(q.completions(64).unwrap().len(), 64);
+    }
+    {
+        let q = session.queue(0).unwrap();
+        for _ in 0..64 { assert_eq!(inject(&session, &[0x45; 20], raw::PLAIN, 0), 0); }
+        let batch = q.receive(64).unwrap();
+        assert_eq!(batch.len(), 64);
+        let mut buffers = [[0u8; 20]; 33];
+        let mut outputs: Vec<&mut [u8]> = buffers.iter_mut().map(|b| &mut b[..]).collect();
+        assert!(matches!(batch.write_segments(0, 0, &mut outputs), Err(Error(1))));
+    }
+    session.close(1000).unwrap();
 }
 fn inject(session: &Session, bytes: &[u8], kind: u32, mss: u32) -> u32 {
     type Send = unsafe extern "C" fn(raw::Native, u32, *const u8, u32, u32, u32) -> u32;

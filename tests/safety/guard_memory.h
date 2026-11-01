@@ -11,7 +11,7 @@ typedef struct { uint8_t *Base,*End; SIZE_T Capacity; } PB_TEST_GUARD;
 static inline PB_TEST_GUARD PbTestGuardCreate(SIZE_T bytes)
 {
     SYSTEM_INFO info; GetSystemInfo(&info); SIZE_T page=info.dwPageSize;
-    SAFETY_CHECK(bytes<=64u*1024u*1024u);
+    SAFETY_CHECK(bytes<=256u*1024u*1024u);
     SIZE_T capacity=((bytes?bytes:1)+page-1)/page*page;
     uint8_t *base=VirtualAlloc(NULL,capacity+2*page,MEM_RESERVE,PAGE_NOACCESS); SAFETY_CHECK(base);
     SAFETY_CHECK(VirtualAlloc(base+page,capacity,MEM_COMMIT,PAGE_READWRITE)==base+page);

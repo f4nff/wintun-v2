@@ -256,17 +256,18 @@ static VOID EmptyReceiveProgress(VOID)
     CHECK(FixtureLocks==1 && !MaskReads);
 #endif
     printf("PASS: empty receive locks=%ld mask_reads=%lu.\n",FixtureLocks,MaskReads);Destroy(f);
-    f=Create(1,4,512,0);PB_KERNEL_QUEUE *q=f->S.Queues;
+    f=Create(1,4,1024,0);PB_KERNEL_QUEUE *q=f->S.Queues;
+    const ULONG backlog=8*PB_MAX_BATCH+1;
     PB_DESCRIPTOR d={.Token={41,1,0,0},.Status=PB_INVALID};
-    for(ULONG i=0;i<257;++i) {q->Credits++;PbV2CompleteLocked(q,&d,PB_INVALID);}
+    for(ULONG i=0;i<backlog;++i) {q->Credits++;PbV2CompleteLocked(q,&d,PB_INVALID);}
     CHECK(!ActualReceiveBatch(q));
 #ifdef PB_EMPTY_BASELINE
     CHECK(q->PendingCount==1);
 #else
-    CHECK(q->PendingCount==129); /* One bounded flush, with a scheduled continuation. */
+    CHECK(q->PendingCount==4*PB_MAX_BATCH+1); /* One bounded flush, with a scheduled continuation. */
 #endif
     ConsumeCompletions();PbV2Worker(q);
-    CHECK(Idle==1 && Exits==1 && SubmittedCompletions==257 && f->S.Completions==257);Destroy(f);
+    CHECK(Idle==1 && Exits==1 && SubmittedCompletions==backlog && f->S.Completions==backlog);Destroy(f);
     f=Create(1,4,512,0);q=f->S.Queues;PB_DESCRIPTOR junk[32]={0};uint32_t count,notify;
     for(ULONG i=0;i<32;++i) {junk[i].Token.Epoch=40;junk[i].Status=PB_INVALID;}
     for(ULONG batch=0;batch<16;++batch) CHECK(PbQueuePush(q->Rings+PB_QUEUE_RX_COMPLETE,junk,32,&count,&notify)==PB_OK && count==32);
@@ -308,8 +309,9 @@ static VOID RecycleIdleWake(VOID)
 }
 static VOID PausedRecycleBudget(ULONG64 base)
 {
-    FIXTURE *f=Create(1,160,256,0);PB_KERNEL_QUEUE *q=f->S.Queues;PB_SLOT slots[160];PB_QUEUE_VIEW producer;
-    CHECK(PbPoolInitialize(&q->TxPool,slots,160,f->S.Epoch,0)==PB_OK);
+    const ULONG total=5*PB_MAX_BATCH;
+    FIXTURE *f=Create(1,total,512,0);PB_KERNEL_QUEUE *q=f->S.Queues;PB_SLOT slots[5*PB_MAX_BATCH];PB_QUEUE_VIEW producer;
+    CHECK(PbPoolInitialize(&q->TxPool,slots,total,f->S.Epoch,0)==PB_OK);
     CHECK(PbAttachQueue(&producer,f->S.Region,&f->S.Layout,0,PB_QUEUE_TX_RECYCLE,1)==PB_OK);
     producer.Cursor=producer.PeerCursor=q->Rings[PB_QUEUE_TX_RECYCLE].Cursor=q->Rings[PB_QUEUE_TX_RECYCLE].PeerCursor=base;
     producer.Shared->Producer=producer.Shared->Consumer=base;
@@ -324,8 +326,8 @@ static VOID PausedRecycleBudget(ULONG64 base)
     q->TxPoolExhausted=TRUE;f->Ctx.Running=0;KeClearEvent(&f->Ctx.Probe.RunningEvent);SubmitOne(&f->S);
     PbV2Worker(q);
     CHECK(Idle==1 && Exits==1 && !Calls && !f->S.Faulted && !q->TxPoolExhausted);
-    CHECK(q->Rings[PB_QUEUE_TX_RECYCLE].Cursor==base+160 && q->Rings[PB_QUEUE_TX_RECYCLE].Shared->Armed==1);
-    for(ULONG i=0;i<160;++i) CHECK(slots[i].State==PB_SLOT_FREE && slots[i].Generation==1);
+    CHECK(q->Rings[PB_QUEUE_TX_RECYCLE].Cursor==base+total && q->Rings[PB_QUEUE_TX_RECYCLE].Shared->Armed==1);
+    for(ULONG i=0;i<total;++i) CHECK(slots[i].State==PB_SLOT_FREE && slots[i].Generation==1);
     CHECK(!q->Rings[PB_QUEUE_RX_SUBMIT].Cursor && WaitForSingleObject(q->KernelEvent->Native,0)==WAIT_TIMEOUT);
     printf("PASS: paused recycle wrap=%u: 160 unique slots retired across the 128-token budget, one idle wait, zero receive scans, ready submission untouched.\n",base!=0);Destroy(f);
 }
@@ -470,12 +472,12 @@ static VOID ConsumeDuringIndication(VOID)
 }
 static VOID ReceiveTailPending(BOOLEAN full,BOOLEAN wake)
 {
-    FIXTURE *f=Create(1,4,full?8:512,UINT64_MAX-1);PB_KERNEL_QUEUE *q=f->S.Queues;uint32_t n,notify;
+    FIXTURE *f=Create(1,4,full?8:1024,UINT64_MAX-1);PB_KERNEL_QUEUE *q=f->S.Queues;uint32_t n,notify;
     if(full) {
         PB_DESCRIPTOR junk[8]={0};for(ULONG i=0;i<8;++i) {junk[i].Token.Epoch=40;junk[i].Status=PB_INVALID;}
         CHECK(PbQueuePush(q->Rings+PB_QUEUE_RX_COMPLETE,junk,8,&n,&notify)==PB_OK && n==8);
     }
-    ULONG pending=full?1:257;PB_DESCRIPTOR d={.Token={41,1,0,0},.Status=PB_INVALID};
+    ULONG pending=full?1:8*PB_MAX_BATCH+1;PB_DESCRIPTOR d={.Token={41,1,0,0},.Status=PB_INVALID};
     for(ULONG i=0;i<pending;++i) {q->Credits++;PbV2CompleteLocked(q,&d,PB_INVALID);}
     SubmitOne(&f->S);UnexpectedIndication=0;AutoConsume=FALSE;
     if(full) {TailConsumerWake=wake;IndicationHook=ConsumeDuringIndication;}
@@ -484,7 +486,7 @@ static VOID ReceiveTailPending(BOOLEAN full,BOOLEAN wake)
 #ifdef PB_RX_TAIL_BASELINE
     CHECK(ReceiveLocks==3 && q->PendingCount==(full?0u:1u));
 #else
-    CHECK(ReceiveLocks==2 && q->PendingCount==(full?1u:129u));
+    CHECK(ReceiveLocks==2 && q->PendingCount==(full?1u:4*PB_MAX_BATCH+1));
 #endif
     ULONG saved=q->PendingCount;AutoConsume=TRUE;PbV2Worker(q);
     CHECK(Idle==1 && Exits==1 && Calls<=2 && SubmittedCompletions==pending && f->S.Completions==pending);
@@ -815,10 +817,48 @@ static VOID FullCompletionCreditWait(BOOLEAN draining)
     printf("PASS: full completion/credit wait draining=%u: no credit released until consumer space/wake; pending plus three submissions then progress, with native ownership retained.\n",draining);Destroy(f);
 }
 #endif
+#ifdef PB_CURRENT_RECEIVE_TAIL
+static VOID DefaultReceiveBatch(VOID)
+{
+    FIXTURE *f=Create(1,PB_DEFAULT_SLOTS,PB_DEFAULT_RING_CAPACITY,UINT64_MAX-31);
+    PB_KERNEL_QUEUE *q=f->S.Queues;UnexpectedIndication=0;
+    const ULONG lengths[]={1500,32768};
+    for(ULONG run=0;run<_countof(lengths);++run) {
+        PB_DESCRIPTOR items[PB_MAX_BATCH]={0};uint32_t count,notify;
+        for(ULONG i=0;i<PB_MAX_BATCH;++i) {
+            items[i].Token=(PB_TOKEN){42,run+1,(USHORT)i,0};items[i].Length=lengths[run];
+            items[i].DataOffset=f->S.Layout.Queues[0].RxData+i*PB_BLOCK_SIZE;
+            UCHAR *data=f->S.Region+items[i].DataOffset;memset(data,(int)i,lengths[run]);
+            data[0]=0x45;data[2]=(UCHAR)(lengths[run]>>8);data[3]=(UCHAR)lengths[run];
+        }
+        CHECK(PbQueuePush(&Submit,items,PB_MAX_BATCH,&count,&notify)==PB_OK && count==PB_MAX_BATCH);
+        ULONG taken=0,turns=0;
+        while(taken<PB_MAX_BATCH) {
+            uint64_t before=q->Rings[PB_QUEUE_RX_SUBMIT].Cursor;
+            memset(q->ReceiveItems,0xa5,sizeof(q->ReceiveItems));memset(q->ReceiveValid,0xff,sizeof(q->ReceiveValid));
+            CHECK(ActualReceiveBatch(q) && Indicated);
+            ULONG n=(ULONG)(q->Rings[PB_QUEUE_RX_SUBMIT].Cursor-before);
+            CHECK(n==min(PB_MAX_BATCH-taken,PB_RX_BYTE_BUDGET/lengths[run]) && f->S.Active==(LONG)n);
+            for(ULONG i=0;i<n;++i) CHECK(q->ReceiveValid[i] && !memcmp(q->ReceiveItems+i,items+taken+i,sizeof(*items)));
+            /* NDIS owns record copies, never the worker's reusable snapshot. */
+            memset(q->ReceiveItems,0x5a,sizeof(q->ReceiveItems));memset(q->ReceiveValid,0,sizeof(q->ReceiveValid));
+            CHECK(PbV2ReturnNbls(&f->Ctx,&Indicated,PB_MAX_BATCH) && !Indicated && !f->S.Active && !q->Credits);
+            ConsumeCompletions();taken+=n;turns++;
+        }
+        CHECK(turns==(PB_MAX_BATCH+min(PB_MAX_BATCH,PB_RX_BYTE_BUDGET/lengths[run])-1)/min(PB_MAX_BATCH,PB_RX_BYTE_BUDGET/lengths[run]));
+    }
+    CHECK(NativeCompletions==2*PB_MAX_BATCH && f->S.Completions==2*PB_MAX_BATCH && !f->S.Faulted);
+    Destroy(f);
+    puts("PASS: production 64-item receive, 512-KiB byte budget (64 small or 16 large objects/turn), poisoned queue snapshots and independent NDIS record ownership across slot reuse and uint64 wrap.");
+}
+#endif
 int main(VOID)
 {
     setvbuf(stdout,NULL,_IONBF,0); DWORD before,after;CHECK(GetProcessHandleCount(GetCurrentProcess(),&before));
     Tail(3,0,FALSE); Tail(3,UINT64_MAX-1,TRUE); Tail(0,0,FALSE);
+#ifdef PB_CURRENT_RECEIVE_TAIL
+    DefaultReceiveBatch();
+#endif
 #ifndef PB_DRAIN_BASELINE
     EmptyReceiveProgress(); NormalIdleArm(); RecycleIdleWake(); PausedRecycleBudget(0); PausedRecycleBudget(UINT64_MAX-63); MultipleQueuesAndFault(); CreditReturnBeforeIdle();
     RejectedBeforeIndication(FALSE); RejectedBeforeIndication(TRUE);

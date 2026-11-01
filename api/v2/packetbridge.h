@@ -14,6 +14,8 @@ typedef struct PB_ADAPTER PB_ADAPTER;
 typedef struct PB_CONFIG {
     uint32_t Size, QueueCount, SlotCount, RingCapacity, Offloads, Flags;
 } PB_CONFIG;
+/* Offloads remain opt-in; queue workers should use PB_MAX_BATCH objects/call. */
+#define PB_CONFIG_INIT { sizeof(PB_CONFIG), PB_DEFAULT_QUEUES, PB_DEFAULT_SLOTS, PB_DEFAULT_RING_CAPACITY, 0, 0 }
 #define PB_OPEN_EXPERIMENTAL_OFFLOADS 1u
 /* Acknowledge successful packet extension 1.1 negotiation before enabling offloads. */
 #define PB_OPEN_CHECKED_SEGMENTS 2u

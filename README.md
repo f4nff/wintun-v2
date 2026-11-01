@@ -15,7 +15,7 @@ Wintun 最初为 [WireGuard](https://www.wireguard.com/)开发，适合主要在
 | 驱动前端 | `NdisMediumIP` 三层 TUN | v2 对 NDIS 呈现 Ethernet 802.3，处理必要的 ARP/NDP；DLL/Rust 边界仍交付三层 IP 包 |
 | 部署身份 | `wintun.dll`、`wintun.sys` 和 Wintun 设备身份 | v2 使用 `packetbridge.dll`、`packetbridge.sys`、`packetbridge.inf`、`packetbridge.cat` 及独立服务/设备身份 |
 | 数据组织 | 一组收发字节 ring，逐包申请、发送、接收和释放 | 独立 TX/RX 数据池、描述符与 token；每个队列有 ready、recycle、submit、completion 四条有界队列 |
-| 批处理与并行 | 公开 API 以单包操作为主 | 1–8 个数据队列，批量获取、归还、预留、取消、提交和完成；单批最多 32 个对象 |
+| 批处理与并行 | 公开 API 以单包操作为主 | 1–8 个数据队列，批量获取、归还、预留、取消、提交和完成；单批最多 64 个对象 |
 | TCP/UDP 卸载 | 基线未提供本项目的 LSOv2/USO/RSC/URO 路径 | 新增 TCP LSOv2、UDP USO、校验和处理、参考分段器，以及受限规则下的 TCP RSC / UDP URO 合并路径 |
 | ABI 与接入 | `Wintun*` 导出函数及旧 ring 注册协议 | v2 通过带版本的 C 函数表、独立 IOCTL 和共享 ABI 接入；新增 `packetbridge-sys` 与 `packetbridge` Rust crate |
 | 缓冲区所有权 | 按旧 ring 协议申请和释放 | 以 session epoch、slot generation、queue ID 和 token 校验所有权；区分未提交 lease、已发布对象及 NDIS 引用 |
@@ -143,7 +143,7 @@ C 调用者加载 `packetbridge.dll`，取得 `PbGetInterfaceV2` 并协商函数
 - `packetbridge-sys`：C ABI 的原始结构、常量和函数指针。
 - `packetbridge`：动态加载、`Adapter` / `Session` / `Queue`、批量 lease、分段和关闭/策略封装；Windows 原生功能以 `cfg(windows)` 启用。
 
-默认 `Config` 为 1 个队列、32 个 slot、ring 容量 64 个条目，卸载掩码为 0。`Queue` 不能跨线程传递，lease 的借用约束用于阻止会话关闭后继续访问缓冲区。应用创建队列工作线程时，应让各线程分别取得并使用自己的队列。
+默认 Rust `Config` 与 C 的 `PB_CONFIG_INIT` 均为 4 个队列、每队列每方向 256 个 slot、ring 容量 512 个条目，收发调用批宽上限为 64，卸载掩码为 0。HostRx/HostTx 工作字节预算分别为 512/128 KiB；默认共享区约 128.52 MiB，共享区上限为 256 MiB。`Queue` 不能跨线程传递，lease 的借用约束用于阻止会话关闭后继续访问缓冲区。应用应按队列数分别创建工作线程，让各线程取得并使用自己的队列。分段写出扩展仍独立限制为每次最多 32 段，URO/RSC 单个合并对象仍最多包含 32 个原始包。
 
 接入时使用 [`rust/Cargo.toml`](rust/Cargo.toml) 中的工作区，或通过应用的本地路径依赖引用 `rust/packetbridge`。如需将绑定复制到另一应用，可使用 [`sync-rust-bindings.ps1`](tools/package/sync-rust-bindings.ps1) 的 `-ApplicationRoot` 参数；该脚本会检查目标 vendor 文件的所有权和哈希。
 
@@ -156,6 +156,14 @@ C 调用者加载 `packetbridge.dll`，取得 `PbGetInterfaceV2` 并协商函数
 [`tools/build/build.ps1`](tools/build/build.ps1) 的 `Tests` / `Safety` 是离线验证入口，覆盖分段/校验和、合并、以太网边界、队列顺序、token、引用与完成、故障和关闭、资源分配失败及 Rust FFI。它们不要求将测试驱动安装到系统中。
 
 [`tools/audit/validate-dll-lifecycle.ps1`](tools/audit/validate-dll-lifecycle.ps1) 汇总生命周期相关构建、旧版编译、静态分析及宿主基准；其他专项验证脚本位于同目录。宿主微基准只能说明对应代码路径的成本，真实吞吐、CPU/GB 和尾延迟需在匹配驱动的目标系统上对照测试。
+
+[`tools/audit/bench-exchange.ps1`](tools/audit/bench-exchange.ps1) 使用实际 DLL 队列函数和共享核心、真实 Windows 事件及并发线程，对照批宽、队列数、slot/ring 深度和字节预算。支持隔离编译 32/64/128/256 批宽及 64/128/256 MiB 共享区，以便重放旧配置和比较候选；当前生产代码上限为 64 项、256 MiB。`-TokenValidation Bitmap` 只生成隔离的线性去重实验核心，不改生产文件。输出原始 JSONL、源码/二进制哈希及单元测试记录，使用 [`analyze-exchange.py`](tools/audit/analyze-exchange.py) 汇总。该基准只测描述符与少量数据标记的交付，不代表完整载荷或真实驱动吞吐。
+
+本机参数对照及重放配置见 [用户态／内核交付参数分析](docs/exchange-throughput.md)。已采用其中的 4 队列、256 slot、ring 512、批宽 64 组合；多队列结果以流量分布到多个队列为前提，不能直接外推为单流或真实链路最大吞吐。
+
+默认切换的 [验证记录](docs/throughput-defaults-validation.json) 包含 C/Rust 64 项批次、内核接收预算与私有快照复用测试，以及完整 Tests/Safety、SYS/DLL 构建和静态分析结果。
+
+切换后的 [新旧默认复测](docs/default-throughput-comparison.md) 使用生产默认直接编译并交替重放旧参数：9 轮、162 个样本；1500 字节描述符交付的 HostRx/HostTx 中位数分别达到旧默认的 19.53/33.82 倍。报告包含单队列加深对照、资源代价、原始样本及复测脚本；仍为宿主交付基准。
 
 `Probe` 阶段生成的 `pbprobe.exe` 支持：
 

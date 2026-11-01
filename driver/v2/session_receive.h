@@ -10,12 +10,12 @@ static BOOLEAN PbV2ReceiveBatch(PB_KERNEL_QUEUE *q)
     if (!ReadAcquire(&ctx->Running) && !ReadAcquire(&s->Draining)) {
         ExReleaseSpinLockShared(&ctx->TransitionLock, irql); return FALSE;
     }
-    PB_DESCRIPTOR items[PB_MAX_BATCH]; uint32_t count = 0;
+    PB_DESCRIPTOR *items = q->ReceiveItems; uint32_t count = 0;
     KLOCK_QUEUE_HANDLE lock;
     KeAcquireInStackQueuedSpinLock(&q->RxLock, &lock);
     PbV2FlushLocked(q);
     ULONG room = PbV2SubmissionRoom(q, min(PB_MAX_BATCH, s->Layout.RingCapacity - q->Credits));
-    PB_RESULT popped = room ? PbQueuePopBudget(&q->Rings[PB_QUEUE_RX_SUBMIT], items, room, 128u * 1024u, &count) : PB_EMPTY;
+    PB_RESULT popped = room ? PbQueuePopBudget(&q->Rings[PB_QUEUE_RX_SUBMIT], items, room, PB_RX_BYTE_BUDGET, &count) : PB_EMPTY;
     if (popped != PB_OK && popped != PB_EMPTY) PbV2Fault(s);
     q->Credits += count;
     KeReleaseInStackQueuedSpinLock(&lock);
@@ -25,7 +25,8 @@ static BOOLEAN PbV2ReceiveBatch(PB_KERNEL_QUEUE *q)
     NET_BUFFER_LIST *head = NULL, *tail = NULL;
     ULONG indicated = 0, objects = 0;
     PB_RX_INDICATION_STATS stats = { 0 };
-    BOOLEAN valid[PB_MAX_BATCH] = { 0 };
+    /* Admission below writes every valid[0..count] before coalescing reads it. */
+    BOOLEAN *valid = q->ReceiveValid;
     BOOLEAN fault = FALSE;
     /* One bounded ownership transaction, rather than reacquiring the same lock for every descriptor. */
     KeAcquireInStackQueuedSpinLock(&q->RxLock, &lock);

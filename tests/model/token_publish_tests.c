@@ -59,7 +59,7 @@ static VOID Matrix(VOID)
     const ULONG capacities[]={1,2,8,32,64,4096};ULONG cases=0;
     PB_TEST_GUARD input=PbTestGuardCreate(PB_MAX_BATCH*sizeof(PB_TOKEN));
     for(ULONG ci=0;ci<_countof(capacities);++ci) {
-        ULONG capacity=capacities[ci],limit=min(capacity,33);
+        ULONG capacity=capacities[ci],limit=min(capacity,PB_MAX_BATCH+1);
         for(ULONG space=0;space<=limit;++space) for(ULONG count=1;count<=PB_MAX_BATCH;++count)
             for(ULONG wrap=0;wrap<2;++wrap) {
                 ULONG64 base=wrap?UINT64_MAX-15:0;
@@ -129,7 +129,7 @@ static VOID ObservePublication(BOOLEAN after)
 static VOID Schedules(ULONG64 base)
 {
     for(ULONG count=1;count<=PB_MAX_BATCH;count+=PB_MAX_BATCH-1) {
-        TOKEN_RING r=MakeRing(32,base,0,0);PB_TOKEN tokens[PB_MAX_BATCH];
+        TOKEN_RING r=MakeRing(PB_MAX_BATCH,base,0,0);PB_TOKEN tokens[PB_MAX_BATCH];
         for(ULONG i=0;i<count;++i) tokens[i]=Token(i);
         Scheduled=&r;ScheduledCount=count;ScheduledInput=tokens;PublishHook=ObservePublication;
         WatchedProducer=(volatile __int64 *)&r.P.Shared->Producer;Publications=0;

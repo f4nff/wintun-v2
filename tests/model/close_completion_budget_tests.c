@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #define CHECK SAFETY_CHECK
+#define CLOSE_BUDGET (4*PB_MAX_BATCH)
 static PB_RESULT ObservedPop(PB_QUEUE_VIEW *,PB_DESCRIPTOR *,uint32_t,uint32_t *);
 static DWORD WINAPI ObservedWait(HANDLE,DWORD);
 static volatile LONG GuardAllocations;
@@ -61,7 +62,7 @@ static DWORD WINAPI ObservedWait(HANDLE event,DWORD timeout)
 {
     if(Current && event==Current->ProgressEvent && timeout==1000) {
         ++Turns;
-        for(ULONG q=0;q<Current->Layout.QueueCount;++q) {CHECK(Calls[q]<=4 && Popped[q]<=128);Calls[q]=Popped[q]=0;}
+        for(ULONG q=0;q<Current->Layout.QueueCount;++q) {CHECK(Calls[q]<=4 && Popped[q]<=CLOSE_BUDGET);Calls[q]=Popped[q]=0;}
         if(WaitEntered && !Gated) {Gated=TRUE;CHECK(SetEvent(WaitEntered) && WaitForSingleObject(WaitGate,5000)==WAIT_OBJECT_0);}
         DWORD result=WaitForSingleObject(event,timeout);if(result==WAIT_TIMEOUT) ++Timeouts;
         CHECK(result==WAIT_OBJECT_0 || result==WAIT_TIMEOUT);return result;
@@ -111,7 +112,7 @@ static VOID WaitPrepared(VOID)
     ReleaseSRWLockExclusive(&Current->State);WaitForThreadpoolWorkCallbacks(Current->Work,FALSE);
     CHECK(Current->Progress.Phase==PB_LIFE_PREPARED && !Current->ResourcesClosed && Current->Region && !Timeouts);
     for(ULONG q=0;q<Current->Layout.QueueCount;++q) {
-        CHECK(!Current->Queues[q].Published && !Current->Queues[q].Loans && Calls[q]<=4 && Popped[q]<=128);
+        CHECK(!Current->Queues[q].Published && !Current->Queues[q].Loans && Calls[q]<=4 && Popped[q]<=CLOSE_BUDGET);
         for(ULONG i=0;i<Current->Layout.SlotCount;++i) CHECK(Current->Queues[q].RxSlots[i].State==PB_SLOT_FREE);
     }
 }
@@ -125,6 +126,9 @@ static VOID CheckConsumed(ULONG q,ULONG completed,ULONG oldConsumed,BOOL structu
 #else
     (void)oldConsumed;ULONG expected=completed;
 #endif
+    if(queue->Rings[PB_QUEUE_RX_COMPLETE].Cursor!=Base+expected)
+        fprintf(stderr,"completion cursor: q=%lu completed=%lu observed=%llu expected=%lu structural=%u fatal=%ld\n",
+            q,completed,(unsigned long long)(queue->Rings[PB_QUEUE_RX_COMPLETE].Cursor-Base),expected,structural,Current->Fatal);
     CHECK(queue->Rings[PB_QUEUE_RX_COMPLETE].Cursor==Base+expected);
     if(structural) return;
     PB_DESCRIPTOR item;uint32_t count;
@@ -145,19 +149,20 @@ static VOID Backlog(ULONG count,BOOL wrap)
 {
     Create(1,count,wrap);SubmitPackets(0,count,count,FALSE);Prepare();CHECK(!Current->Fatal);
 #ifndef PB_CLOSE_COMPLETION_BASELINE
-    CHECK(Turns==(count-1)/128);
+    CHECK(Turns==(count-1)/CLOSE_BUDGET);
 #else
     CHECK(!Turns);
 #endif
-    CheckConsumed(0,count,count>128?128:count,FALSE);Finish();
+    CheckConsumed(0,count,count>CLOSE_BUDGET?CLOSE_BUDGET:count,FALSE);Finish();
 }
 static VOID TwoQueues(BOOL wrap,ULONG damage)
 {
-    Create(2,255,wrap);SubmitPackets(0,129,damage==2?0:129,damage==1);SubmitPackets(1,255,255,FALSE);
-    if(damage==2) Current->Queues[0].Rings[PB_QUEUE_RX_COMPLETE].Shared->Producer=Base+257;
+    const ULONG first=CLOSE_BUDGET+1,second=2*CLOSE_BUDGET-1;
+    Create(2,second,wrap);SubmitPackets(0,first,damage==2?0:first,damage==1);SubmitPackets(1,second,second,FALSE);
+    if(damage==2) Current->Queues[0].Rings[PB_QUEUE_RX_COMPLETE].Shared->Producer=Base+Current->Layout.RingCapacity+1;
     Prepare();CHECK(!!Current->Fatal==!!damage);
-    CheckConsumed(0,damage==2?0:129,damage==2?0:damage==1?32:128,damage==2);
-    CheckConsumed(1,255,128,FALSE);Finish();
+    CheckConsumed(0,damage==2?0:first,damage==2?0:damage==1?PB_MAX_BATCH:CLOSE_BUDGET,damage==2);
+    CheckConsumed(1,second,CLOSE_BUDGET,FALSE);Finish();
 }
 static VOID LatePublication(BOOL wrap)
 {
@@ -178,22 +183,22 @@ static VOID Abandoned(BOOL wrap,ULONG completed)
 {Create(1,256,wrap);SubmitPackets(0,256,completed,FALSE);Prepare();CHECK(!Current->Fatal);CheckConsumed(0,completed,completed>128?128:completed,FALSE);Finish();}
 static VOID Barrier(BOOL native)
 {
-    Create(1,257,FALSE);SubmitPackets(0,256,256,FALSE);PB_LEASE loan;uint32_t count;
+    const ULONG total=2*CLOSE_BUDGET-1;
+    Create(1,total+1,FALSE);SubmitPackets(0,total,total,FALSE);PB_LEASE loan;uint32_t count;
     if(native) PbTestActive(Current,1);
     else CHECK(Api.ReserveBatch(Current->Queues,&loan,1,&count)==PB_OK && count==1);
     HANDLE entered=Event(),gate=Event();WaitEntered=entered;WaitGate=gate;
     CHECK(Life.BeginStop(Current)==PB_OK && WaitForSingleObject(entered,5000)==WAIT_OBJECT_0);
     PB_CLOSE_PROGRESS progress;CHECK(Life.GetCloseProgress(Current,&progress)==PB_OK && progress.Phase<PB_LIFE_PREPARED && !Current->ResourcesClosed && Current->Region);
-    CHECK(Current->Queues[0].Published==128 && (native?Current->TestActive==1:Current->Queues[0].Loans==1));
+    CHECK(Current->Queues[0].Published==(LONG)(total-CLOSE_BUDGET) && (native?Current->TestActive==1:Current->Queues[0].Loans==1));
     if(native) PbTestActive(Current,0);
     else CHECK(Api.CancelBatch(Current->Queues,&loan.Descriptor.Token,1)==PB_OK);
-    CHECK(SetEvent(gate));WaitPrepared();CHECK(!Current->Fatal);CheckConsumed(0,256,256,FALSE);Finish();CHECK(CloseHandle(entered) && CloseHandle(gate));
+    CHECK(SetEvent(gate));WaitPrepared();CHECK(!Current->Fatal);CheckConsumed(0,total,total,FALSE);Finish();CHECK(CloseHandle(entered) && CloseHandle(gate));
 }
 int main(VOID)
 {
     CHECK(PbGetInterfaceV2(2,sizeof(Api),&Api)==PB_OK && PbGetLifecycleInterface(1,sizeof(Life),&Life)==PB_OK);
-    /* 512 slots with this ring layout exceed the ABI's 64 MiB region limit. */
-    ULONG counts[]={127,128,129,256,510};
+    ULONG counts[]={CLOSE_BUDGET-1,CLOSE_BUDGET,CLOSE_BUDGET+1,2*CLOSE_BUDGET,510};
     for(ULONG wrap=0;wrap<2;++wrap) {
         for(ULONG i=0;i<sizeof(counts)/sizeof(counts[0]);++i) Backlog(counts[i],wrap);
         TwoQueues(wrap,0);TwoQueues(wrap,1);TwoQueues(wrap,2);LatePublication(wrap);Abandoned(wrap,0);Abandoned(wrap,129);

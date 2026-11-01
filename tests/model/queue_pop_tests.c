@@ -91,7 +91,7 @@ static VOID Rejections(VOID)
         CHECK(POP(NULL, blocked, 1, &n) == PB_INVALID && !n);
         CHECK(POP(&v, NULL, 1, &n) == PB_INVALID && !n);
         CHECK(POP(&v, blocked, 0, &n) == PB_INVALID && !n);
-        CHECK(POP(&v, blocked, 33, &n) == PB_INVALID && !n);
+        CHECK(POP(&v, blocked, PB_MAX_BATCH + 1, &n) == PB_INVALID && !n);
         CHECK(POP(&v, blocked, 1, NULL) == PB_INVALID);
         v.Producer = 1; CHECK(POP(&v, blocked, 1, &n) == PB_INVALID && !n); v.Producer = 0;
         shared.Producer = v.Cursor + 9; CHECK(POP(&v, blocked, 1, &n) == PB_CORRUPT && !n);

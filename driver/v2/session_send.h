@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #pragma once
 #define PB_TX_ATTEMPT_BUDGET PB_MAX_BATCH
-#define PB_TX_BYTE_BUDGET (128u * 1024u)
+/* Send calls can run concurrently/reenter, so storage stays call-local.
+ * Growing beyond 64 requires a separate bounded scratch-storage design. */
+typedef char PB_TX_STACK_BATCH_BOUNDED[
+    PB_MAX_BATCH * (sizeof(PB_DESCRIPTOR) + sizeof(NET_BUFFER_LIST *)) <= 4608u ? 1 : -1];
 
 static VOID PbV2PublishTx(PB_KERNEL_QUEUE *q, PB_DESCRIPTOR *items, NET_BUFFER_LIST **owners, uint32_t count)
 {

@@ -6,8 +6,13 @@
 #define PB_ABI_MAJOR 2u
 #define PB_ABI_MINOR 1u
 #define PB_MAX_QUEUES 8u
-#define PB_MAX_BATCH 32u
-#define PB_MAX_REGION (64u * 1024u * 1024u)
+#define PB_MAX_BATCH 64u
+#define PB_MAX_REGION (256u * 1024u * 1024u)
+#define PB_DEFAULT_QUEUES 4u
+#define PB_DEFAULT_SLOTS 256u
+#define PB_DEFAULT_RING_CAPACITY 512u
+#define PB_RX_BYTE_BUDGET (512u * 1024u)
+#define PB_TX_BYTE_BUDGET (128u * 1024u)
 #define PB_BLOCK_SIZE 65536u
 #define PB_MAX_SLOTS 512u
 #define PB_QUEUE_TX_READY 0u

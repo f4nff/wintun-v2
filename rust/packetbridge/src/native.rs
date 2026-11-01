@@ -359,9 +359,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            queues: 1,
-            slots: 32,
-            ring_capacity: 64,
+            queues: raw::DEFAULT_QUEUES,
+            slots: raw::DEFAULT_SLOTS,
+            ring_capacity: raw::DEFAULT_RING_CAPACITY,
             offloads: 0,
             experimental: false,
         }
@@ -750,7 +750,9 @@ impl ReceivedBatch<'_> {
         first: usize,
         outputs: &mut [&mut [u8]],
     ) -> Result<Vec<usize>> {
-        batch_size(outputs.len())?;
+        if outputs.is_empty() || outputs.len() > raw::MAX_SEGMENT_BATCH {
+            return Err(Error(1));
+        }
         let item = self.items.get(index).ok_or(Error(1))?;
         if item.descriptor.kind == raw::PLAIN {
             let data = self.data(index).ok_or(Error(1))?;
@@ -764,7 +766,7 @@ impl ReceivedBatch<'_> {
         if first >= plan.count as usize {
             return Err(Error(1));
         }
-        let mut native = [raw::SegmentOutput::default(); raw::MAX_BATCH];
+        let mut native = [raw::SegmentOutput::default(); raw::MAX_SEGMENT_BATCH];
         for (out, buffer) in native.iter_mut().zip(outputs.iter_mut()) {
             out.data = buffer.as_mut_ptr();
             out.capacity = u32::try_from(buffer.len()).map_err(|_| Error(1))?;

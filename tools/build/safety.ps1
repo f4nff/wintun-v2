@@ -21,6 +21,8 @@ $cases=@(
     @{name='queue-order';sources=@('tests\model\queue_order_tests.c');defines=@('/volatile:iso');libs=@()},
     @{name='queue-pop';sources=@('tests\model\queue_pop_tests.c');defines=@('/volatile:iso');libs=@()},
     @{name='queue-ring';sources=@('tests\model\queue_ring_tests.c');defines=@('/volatile:iso');libs=@()},
+    @{name='exchange';sources=@('common\v2_core.c','tests\model\exchange_tests.c');defines=@('/volatile:iso');libs=@()},
+    @{name='default-config';sources=@('common\v2_core.c','tests\model\default_config_tests.c');defines=@('/volatile:iso');libs=@()},
     @{name='token-queue';sources=@('tests\model\token_queue_tests.c');defines=@('/volatile:iso');libs=@()},
     @{name='token-publish';sources=@('tests\model\token_publish_tests.c');defines=@('/volatile:iso');libs=@()},
     @{name='reference-publication';sources=@('tests\model\receive_reference_tests.c');defines=@('/volatile:iso');libs=@()},

@@ -118,10 +118,10 @@ static VOID RejectionsAndFootprint(VOID)
     PB_POOL p,saved;PB_SLOT slots[2];Reset(&p,slots,2,PB_SLOT_PUBLISHED,FALSE);saved=p;
     PB_TOKEN token={42,17,0,3};PB_DESCRIPTOR item={.Token=token};
     CHECK(PbValidateTokens(&p,NULL,1,PB_SLOT_PUBLISHED)==PB_INVALID && PbValidateTokens(&p,&token,0,PB_SLOT_PUBLISHED)==PB_INVALID);
-    CHECK(PbValidateTokens(&p,&token,33,PB_SLOT_PUBLISHED)==PB_INVALID && PbValidateTokens(NULL,&token,1,PB_SLOT_PUBLISHED)==PB_STALE);
+    CHECK(PbValidateTokens(&p,&token,PB_MAX_BATCH+1,PB_SLOT_PUBLISHED)==PB_INVALID && PbValidateTokens(NULL,&token,1,PB_SLOT_PUBLISHED)==PB_STALE);
     PB_POOL invalid=p;invalid.Slots=NULL;CHECK(PbValidateTokens(&invalid,&token,1,PB_SLOT_PUBLISHED)==PB_STALE);
     CHECK(PbPoolImport(NULL,&item,1)==PB_INVALID && PbPoolImport(&invalid,&item,1)==PB_INVALID && PbPoolImport(&p,NULL,1)==PB_INVALID);
-    CHECK(PbPoolImport(&p,&item,0)==PB_INVALID && PbPoolImport(&p,&item,33)==PB_INVALID && !memcmp(&p,&saved,sizeof(p)));
+    CHECK(PbPoolImport(&p,&item,0)==PB_INVALID && PbPoolImport(&p,&item,PB_MAX_BATCH+1)==PB_INVALID && !memcmp(&p,&saved,sizeof(p)));
     PB_TEST_GUARD input=PbTestGuardCreate(sizeof(PB_DESCRIPTOR));
     PB_TOKEN *t=(PB_TOKEN *)PbTestGuardSpan(&input,sizeof(*t));*t=token;
     CHECK(PbValidateTokens(&p,t,1,PB_SLOT_PUBLISHED)==PB_OK);

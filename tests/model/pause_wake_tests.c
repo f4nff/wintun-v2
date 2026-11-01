@@ -94,23 +94,24 @@ static DWORD WINAPI Worker(VOID *queue) {PbV2Worker(queue);return 0;}
 static VOID Run(BOOL restart,BOOL manual,BOOL wrap)
 {
     CHECK(!Pools && !Mdls && !Nbls && !MemoryBlocks);PB_KERNEL_SESSION s={0};TUN_CTX ctx={0};Current=&s;s.Ctx=&ctx;s.Epoch=42;ctx.V2=&s;ctx.Running=1;
-    CHECK(PbCalculateLayout(1,129,256,&s.Layout)==PB_OK);s.Region=Memory(s.Layout.RegionSize,TRUE);
+    const ULONG budget=4*PB_MAX_BATCH,total=budget+1;
+    CHECK(PbCalculateLayout(1,total,512,&s.Layout)==PB_OK);s.Region=Memory(s.Layout.RegionSize,TRUE);
     s.StartEvent.Native=CreateEventW(NULL,TRUE,TRUE,NULL);s.StopEvent.Native=Event();s.AllReturned.Native=CreateEventW(NULL,TRUE,TRUE,NULL);
     ctx.Probe.RunningEvent.Native=CreateEventW(NULL,TRUE,TRUE,NULL);CHECK(s.StartEvent.Native && s.AllReturned.Native && ctx.Probe.RunningEvent.Native);
     PB_KERNEL_QUEUE *q=s.Queues;q->Session=&s;q->KernelEvent=Memory(sizeof(KEVENT),FALSE);q->UserEvent=Memory(sizeof(KEVENT),FALSE);
     q->KernelEvent->Native=CreateEventW(NULL,manual,FALSE,NULL);q->UserEvent->Native=Event();CHECK(q->KernelEvent->Native);
-    q->RxSlots=Memory(129*sizeof(*q->RxSlots),FALSE);q->Pending=Memory(256*sizeof(*q->Pending),FALSE);
+    q->RxSlots=Memory(total*sizeof(*q->RxSlots),FALSE);q->Pending=Memory(512*sizeof(*q->Pending),FALSE);
     for(ULONG ring=0;ring<PB_QUEUE_COUNT;++ring) CHECK(PbAttachQueue(q->Rings+ring,s.Region,&s.Layout,0,ring,ring==PB_QUEUE_TX_READY || ring==PB_QUEUE_RX_COMPLETE)==PB_OK);
     uint64_t base=wrap?UINT64_MAX-63:0;PB_QUEUE_VIEW *complete=q->Rings+PB_QUEUE_RX_COMPLETE;
     complete->Cursor=complete->PeerCursor=complete->Shared->Producer=complete->Shared->Consumer=base;
     PB_QUEUE_VIEW consumer;CHECK(PbAttachQueue(&consumer,s.Region,&s.Layout,0,PB_QUEUE_RX_COMPLETE,0)==PB_OK);consumer.Cursor=consumer.PeerCursor=base;
-    for(ULONG i=0;i<129;++i) {
+    for(ULONG i=0;i<total;++i) {
         q->RxSlots[i].Generation=1;
         q->Pending[i]=(PB_DESCRIPTOR){.Token={42,1,(USHORT)i,0},.Length=20,.DataOffset=s.Layout.Queues[0].RxData+i*PB_BLOCK_SIZE};
     }
-    q->PendingCount=q->Credits=129;PbV2FlushLocked(q);CHECK(q->PendingCount==1 && q->Credits==1 && s.Completions==128);
+    q->PendingCount=q->Credits=total;PbV2FlushLocked(q);CHECK(q->PendingCount==1 && q->Credits==1 && s.Completions==budget);
     PB_DESCRIPTOR items[PB_MAX_BATCH];uint32_t count;
-    for(ULONG batch=0;batch<4;++batch) CHECK(PbQueuePop(&consumer,items,32,&count)==PB_OK && count==32);
+    for(ULONG batch=0;batch<4;++batch) CHECK(PbQueuePop(&consumer,items,PB_MAX_BATCH,&count)==PB_OK && count==PB_MAX_BATCH);
     KeSetEvent(q->KernelEvent,0,FALSE); /* Actual completion-consumer space wake. */
     ReceiveEntered=Event();ReceiveGate=Event();FirstWaitEntered=Event();FirstWaitGate=Event();FirstObserved=Event();ObserveGate=Event();NextWaitEntered=Event();
     WaitCount=FirstWaitCount=NextWaitCount=FirstReady=Receives=KernelWakes=IndicationWaits=ReferenceWaits=0;GatedReceive=FALSE;OnSetEvent=CountWake;
@@ -129,10 +130,10 @@ static VOID Run(BOOL restart,BOOL manual,BOOL wrap)
     CHECK(KernelWakes==1 && FirstReady==WAIT_OBJECT_0+1);
 #endif
     CHECK(SetEvent(ObserveGate) && WaitForSingleObject(NextWaitEntered,5000)==WAIT_OBJECT_0);
-    CHECK(!q->PendingCount && !q->Credits && s.Completions==129 && !s.Active && !s.Faulted && !s.Draining && WaitCount==2);
+    CHECK(!q->PendingCount && !q->Credits && s.Completions==total && !s.Active && !s.Faulted && !s.Draining && WaitCount==2);
     CHECK(NextWaitCount==(restart?2u:3u) && Receives==(restart?2u:1u));
     CHECK(!UnexpectedIndications);
-    CHECK(PbQueuePop(&consumer,items,32,&count)==PB_OK && count==1 && items[0].Token.Slot==128);
+    CHECK(PbQueuePop(&consumer,items,PB_MAX_BATCH,&count)==PB_OK && count==1 && items[0].Token.Slot==budget);
     InterlockedExchange(&s.Stopping,1);KeSetEvent(&s.StopEvent,0,FALSE);CHECK(WaitForSingleObject(thread,5000)==WAIT_OBJECT_0 && CloseHandle(thread));
     OnSetEvent=NULL;Current=NULL;
     CHECK(CloseHandle(ReceiveEntered) && CloseHandle(ReceiveGate) && CloseHandle(FirstWaitEntered) && CloseHandle(FirstWaitGate) && CloseHandle(FirstObserved) && CloseHandle(ObserveGate) && CloseHandle(NextWaitEntered));

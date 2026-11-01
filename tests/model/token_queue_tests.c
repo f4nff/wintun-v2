@@ -72,7 +72,7 @@ static VOID TokenMatrix(VOID)
     PB_TEST_GUARD memory=PbTestGuardCreate(PB_MAX_BATCH*sizeof(PB_TOKEN));
     for(ULONG ci=0;ci<_countof(capacities);++ci) {
         TOKEN_RING r=MakeTokenRing(capacities[ci]),reference=MakeTokenRing(capacities[ci]);
-        ULONG limit=min(capacities[ci],33);
+        ULONG limit=min(capacities[ci],PB_MAX_BATCH+1);
         for(ULONG ai=0;ai<=limit+1;++ai) for(ULONG count=1;count<=PB_MAX_BATCH;++count) for(ULONG wrap=0;wrap<2;++wrap) {
             ULONG available=ai>limit?capacities[ci]:ai;ULONG64 base=wrap?UINT64_MAX-15:0;
             ResetTokens(&r,base,available,cases&1);ResetTokens(&reference,base,available,cases&1);

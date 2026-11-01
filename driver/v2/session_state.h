@@ -16,6 +16,10 @@ typedef struct PB_KERNEL_QUEUE {
     PB_SLOT *TxSlots;
     PB_RX_SLOT *RxSlots;
     PB_DESCRIPTOR *Pending;
+    /* Only this queue's worker uses these snapshots. Keep the 64-item batch
+     * off the kernel stack, including across reentrant NDIS indications. */
+    PB_DESCRIPTOR ReceiveItems[PB_MAX_BATCH];
+    BOOLEAN ReceiveValid[PB_MAX_BATCH];
     UCHAR *Scratch, *CoalesceBuffers[2];
     volatile LONG CoalesceBusy[2];
     ULONG PendingHead, PendingCount, Credits;

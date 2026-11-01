@@ -123,7 +123,7 @@ static VOID Imports(VOID)
     bad[1].Token.Epoch++;RejectImport(p,bad,2,PB_STALE);bad[1].Token.Epoch=42;
     bad[1].Token.Generation=0;RejectImport(p,bad,2,PB_STALE);bad[1].Token.Generation=1;
     bad[1].Token.Queue=4;RejectImport(p,bad,2,PB_STALE);bad[1].Token.Queue=3;
-    RejectImport(p,NULL,1,PB_INVALID);RejectImport(p,bad,0,PB_INVALID);RejectImport(p,bad,33,PB_INVALID);
+    RejectImport(p,NULL,1,PB_INVALID);RejectImport(p,bad,0,PB_INVALID);RejectImport(p,bad,PB_MAX_BATCH+1,PB_INVALID);
     CHECK(PbPoolTransition(p,&items[0].Token,PB_SLOT_PUBLISHED,PB_SLOT_FREE)==PB_OK);
     RejectImport(p,items,1,PB_STALE);items[0].Token.Generation++;
     CHECK(PbPoolImport(p,items,1)==PB_OK);

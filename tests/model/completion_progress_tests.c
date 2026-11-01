@@ -101,18 +101,18 @@ static VOID BudgetAndWrap(BOOLEAN wrap)
     while(q->PendingCount) {
         uint32_t ready; CHECK(PbQueueArm(&f->Consumer,&ready)==PB_OK && !ready); f->Kernel.Signaled=FALSE;
         ULONG before=q->PendingCount; PbV2FlushLocked(q);
-        CHECK(before-q->PendingCount<=128 && before-q->PendingCount>0);
+        CHECK(before-q->PendingCount<=4*PB_MAX_BATCH && before-q->PendingCount>0);
         ULONG n=Consume(f,consumed); CHECK(n==before-q->PendingCount && f->User.Signaled);
         consumed+=n; passes++;
         CHECK(f->Kernel.Signaled==(q->PendingCount!=0)); /* Bounded work must arrange its own next pass. */
     }
-    CHECK(consumed==4096 && passes==32 && !q->Credits && f->S.Completions==4096 && f->User.Sets==32);
+    CHECK(consumed==4096 && passes==4096/(4*PB_MAX_BATCH) && !q->Credits && f->S.Completions==4096 && f->User.Sets==passes);
 #ifdef PB_COMPLETION_COPY_BASELINE
     CHECK(StagedDescriptors==4096 && !DirectDescriptors);
 #else
     CHECK(!StagedDescriptors && DirectDescriptors==4096);
 #endif
-    printf("PASS: actual completion flush wrap=%u: completions=%lu staged_bytes=%zu direct_descriptors=%lu, <=128/pass, identical continuation and wake counts.\n",wrap,consumed,StagedDescriptors*sizeof(PB_DESCRIPTOR),DirectDescriptors);
+    printf("PASS: actual completion flush wrap=%u: completions=%lu staged_bytes=%zu direct_descriptors=%lu, <=%u/pass, identical continuation and wake counts.\n",wrap,consumed,StagedDescriptors*sizeof(PB_DESCRIPTOR),DirectDescriptors,4*PB_MAX_BATCH);
     Destroy(f);
 }
 static VOID BackpressureAndCorruption(BOOLEAN corrupt)
@@ -167,16 +167,17 @@ static VOID PausedProgress(VOID)
 }
 static VOID PausedBudget(VOID)
 {
-    FIXTURE *f=Create(512); PB_KERNEL_QUEUE *q=f->S.Queues; Add(f,0,384);
+    const ULONG total=12*PB_MAX_BATCH;
+    FIXTURE *f=Create(1024); PB_KERNEL_QUEUE *q=f->S.Queues; Add(f,0,total);
     uint32_t ready; CHECK(PbQueueArm(&f->Consumer,&ready)==PB_OK && !ready);
     f->S.StartEvent.Signaled=TRUE; WorkerSession=&f->S; Waits=UnexpectedReceives=0; PbV2Worker(q);
-    CHECK(!q->PendingCount && !q->Credits && f->S.Completions==384 && Waits==3 && f->Kernel.Sets==2 && !UnexpectedReceives);
-    CHECK(Consume(f,0)==384); Destroy(f);
+    CHECK(!q->PendingCount && !q->Credits && f->S.Completions==total && Waits==3 && f->Kernel.Sets==2 && !UnexpectedReceives);
+    CHECK(Consume(f,0)==total); Destroy(f);
 }
 int main(int argc,char **argv)
 {
     if(argc==2 && !strcmp(argv[1],"--paused")) { PausedProgress(); puts("PASS: actual paused worker drains completion backlog after consumer wake."); return 0; }
     BudgetAndWrap(FALSE); BudgetAndWrap(TRUE); BackpressureAndCorruption(FALSE); BackpressureAndCorruption(TRUE); PartialWrap(); PausedProgress(); PausedBudget();
-    puts("PASS: actual completion/worker paths, seven cases, 4096 completions per normal/wrap case, <=128 per pass, partial acceptance, reschedule, full-ring quiescence, corruption and paused progress across three budgets.");
+    printf("PASS: actual completion/worker paths, seven cases, 4096 completions per normal/wrap case, <=%u per pass, partial acceptance, reschedule, full-ring quiescence, corruption and paused progress across three budgets.\n",4*PB_MAX_BATCH);
     return 0;
 }

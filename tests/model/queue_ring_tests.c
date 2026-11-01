@@ -74,7 +74,7 @@ static VOID Matrix(VOID)
 static VOID Rejections(VOID)
 {
     RING r=MakeRing(8);PB_DESCRIPTOR source[8]={0};uint32_t n,notify;
-    const ULONG invalid[][3]={{0,0,1},{3,0,1},{8192,0,1},{UINT32_MAX,0,1},{8,8,1},{8,UINT32_MAX,1},{8,0,9},{8,0,0},{64,0,33}};
+    const ULONG invalid[][3]={{0,0,1},{3,0,1},{8192,0,1},{UINT32_MAX,0,1},{8,8,1},{8,UINT32_MAX,1},{8,0,9},{8,0,0},{128,0,PB_MAX_BATCH+1}};
     ResetRing(&r,8,8,1);UCHAR before[sizeof(PB_QUEUE_SHARED)+8*sizeof(PB_DESCRIPTOR)];memcpy(before,r.P.Shared,sizeof(before));
     for(ULONG i=0;i<_countof(invalid);++i) {
         n=notify=99;Monitor=TRUE;Publications=ArmExchanges=0;

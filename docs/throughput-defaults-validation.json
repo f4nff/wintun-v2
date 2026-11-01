@@ -1,0 +1,56 @@
+{
+  "defaults": {
+    "queues": 4,
+    "slots_per_queue_per_direction": 256,
+    "ring_capacity": 512,
+    "max_batch": 64,
+    "rx_byte_budget": 524288,
+    "tx_byte_budget": 131072,
+    "max_region_bytes": 268435456,
+    "default_region_bytes": 134762496,
+    "max_segment_write_batch": 32
+  },
+  "records": {
+    "tests": {
+      "path": "out/packet-path-v2/2.0.0/5078baa13eed/test-results.json",
+      "executed_processes": 53,
+      "result": "passed"
+    },
+    "safety": {
+      "path": "out/packet-path-v2/2.0.0/5078baa13eed/safety/safety-results.json",
+      "executed_processes": 45,
+      "result": "passed"
+    },
+    "driver": {
+      "manifest": "out/packet-path-v2/2.0.0/5078baa13eed/driver/manifest.json",
+      "source_tree_sha256": "5078baa13eed54b26fdf337062948bc5f2a76b729f9b899dcfeb2a7324ab1bb8",
+      "kind": "v2-development-unsigned"
+    },
+    "api": {
+      "manifest": "out/packet-path-v2/2.0.0/5078baa13eed/manifest.json",
+      "source_tree_sha256": "5078baa13eed54b26fdf337062948bc5f2a76b729f9b899dcfeb2a7324ab1bb8",
+      "kind": "v2-development-api"
+    }
+  },
+  "sys_analysis": {
+    "path": "out/packet-path-v2/2.0.0/5078baa13eed/analysis/analysis-summary.json",
+    "project_diagnostics": 8,
+    "new_project_diagnostics": 0,
+    "unchanged_against": "out/packet-path-v2/2.0.0/0112f76b2c1a/analysis/analysis-summary.json",
+    "manual_review_required": true
+  },
+  "sources_sha256": {
+    "include/packetbridge_v2_abi.h": "88fb207c65c6ddb7ebef3da2b7efdd030c4eed40e39b35d5a5c98fc8aba4d10a",
+    "api/v2/packetbridge.h": "ab529be8bf776863d9abc4ae1a7d6399b81c970e4c69df7df0b7259c6537789c",
+    "driver/v2/session_state.h": "931aaf429970a9b55d6a71a8e14417cf485a01eaa20ca126a8ee986542f062a2",
+    "driver/v2/session_receive.h": "cc5463a56d0abdaf5fb6351b9a5fe49bd05570457fb69ce50f5c1dde90fc3c27",
+    "driver/v2/session_send.h": "7e6f71fdfb3631d0676df0bf50d51e52bb8244be60d0d89c65ba7c088d915f81",
+    "rust/packetbridge-sys/src/lib.rs": "3657aa920cf86fd8900d27b22e3866710fa91b37c0ef8d1f023254855d28fd0e",
+    "rust/packetbridge/src/native.rs": "66aca4a0747e6e0cc1db6065a0b01147add4e80effeaf675d86222277c8e9807",
+    "rust/packetbridge/src/native_tests.rs": "6f40bb431b9f262d6cf601bfef8af4ae5d05c0465ccc4c3967114c3360e29bcf",
+    "tests/model/default_config_tests.c": "54f4d8d9bf559d8e3140993dec35ea7c1d322aa53acdcb67f88d52ad4d8c2577",
+    "tests/model/drain_boundary_tests.c": "4fd8afe2b998c6ca628ff05fa266b689e4602be4e68109a477cc5f3001fa7df5"
+  },
+  "kernel_runtime_tested": false,
+  "installed_to_system": false
+}

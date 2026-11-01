@@ -88,7 +88,7 @@ static void QueueTests(void)
     CHECK(PbQueuePop(&c, output, 1, &n) == PB_CORRUPT && n == 0);
     p.Shared->Producer = c.Cursor - 1;
     CHECK(PbQueueArm(&c, &ready) == PB_CORRUPT && !p.Shared->Armed);
-    CHECK(PbQueuePush(&p, input, 33, &n, &notify) == PB_INVALID);
+    CHECK(PbQueuePush(&p, input, PB_MAX_BATCH + 1, &n, &notify) == PB_INVALID);
     PB_LAYOUT bad = l; bad.Queues[0].TxData++;
     CHECK(PbAttachQueue(&p, region, &bad, 0, 0, 1) == PB_INVALID);
     VirtualFree(region, 0, MEM_RELEASE);

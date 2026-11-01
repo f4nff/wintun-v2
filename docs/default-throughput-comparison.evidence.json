@@ -1,0 +1,176 @@
+{
+  "measurement": {
+    "source_tree_sha256": "8e71392af16a640e720d69bdd13380e2ffc17d248d074144be416facb01114a6",
+    "started": "2026-11-01T03:35:42.5410095+08:00",
+    "finished": "2026-11-01T03:38:51.56799+08:00",
+    "rounds": 9,
+    "objects_per_sample": 8388608,
+    "warmup_objects": 8192,
+    "cases": 18,
+    "samples": 162,
+    "processor": {
+      "Name": "Intel(R) Core(TM) Ultra 9 285H",
+      "NumberOfCores": 16,
+      "NumberOfLogicalProcessors": 16
+    },
+    "os": {
+      "Caption": "Microsoft Windows 11 专业版",
+      "Version": "10.0.26300",
+      "BuildNumber": "26300"
+    },
+    "artifacts": [
+      {
+        "sha256": "35261d4f181df1dbd2d5ec9392af4a998d5bec889b88f887e72d1c112dcd3bd8",
+        "variant": "old",
+        "path": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\old\\tests.exe",
+        "compile_overrides": {
+          "PB_MAX_REGION": 67108864,
+          "PB_MAX_BATCH": 32
+        },
+        "kind": "tests"
+      },
+      {
+        "sha256": "287eeba446d38b2e46d12b8de95ce7c6b33126927b7d481cc9ea33fe479b1d4b",
+        "variant": "old",
+        "path": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\old\\bench.exe",
+        "compile_overrides": {
+          "PB_MAX_REGION": 67108864,
+          "PB_MAX_BATCH": 32
+        },
+        "kind": "bench"
+      },
+      {
+        "sha256": "8a1aef80f4c9c58c5b8741d48c5a84ea280e24861fb16d00f9b55fd9993c5a26",
+        "variant": "production",
+        "path": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\production\\tests.exe",
+        "compile_overrides": {},
+        "kind": "tests"
+      },
+      {
+        "sha256": "1a2d95c7867b1089c5f9c1f9d018231deec6993c13b0c9ee71d48cdac0b046e4",
+        "variant": "production",
+        "path": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\production\\bench.exe",
+        "compile_overrides": {},
+        "kind": "bench"
+      }
+    ],
+    "raw_samples": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\comparison-samples.jsonl",
+    "tests": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\comparison-tests.json",
+    "production_source_overrides": false,
+    "kernel_runtime_tested": false,
+    "method": "Current defaults: PB_CONFIG_INIT, PB_MAX_BATCH and directional budgets from production headers, without forced includes. Old baseline: current same source with isolated batch32/region64MiB overrides and explicit 1queue/32slots/ring64/128KiB budgets. Depth control: same old binary, 1queue/128slots/ring128/batch32. Adjacent profiles, reverse order every round. Actual DLL queue bodies and shared core, real Windows events/SRW locks, pinned user/hosted-peer threads (2 per queue), immediate completion/recycle, pre-touched buffers and exact ordered 16-byte markers per object. No full payload copy, SYS/NDIS callbacks, crypto or network; directions measured separately. SetEvent/wait call counts are not context switches."
+  },
+  "functional_tests": {
+    "version": "2.0.0",
+    "source_tree_sha256": "8e71392af16a640e720d69bdd13380e2ffc17d248d074144be416facb01114a6",
+    "result": "passed",
+    "kernel_runtime_tested": false,
+    "executed_processes": 2,
+    "executions": [
+      {
+        "program": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\old\\tests.exe",
+        "arguments": [],
+        "exit_code": 0,
+        "log": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\test-logs\\00-tests.log",
+        "python_reported_tests": [],
+        "rust_reported_results": [],
+        "reported_pass_messages": [
+          "PASS: actual DLL completion notification: exactly one real SetEvent per nonempty poll; none for empty/oversized calls; guarded output bounds and uint64 cursor wrap.",
+          "PASS: actual shared-core object/byte limits, partial batches and slot retirement at 64/1500/32768/65535 bytes.",
+          "PASS: actual layout bounds at ring capacity 512: region_limit=64 MiB, queues 1/2/4/8 allow 510/254/126/62 slots (ring storage also counts).",
+          "PASS: guarded full-width token import/validation, duplicate slots, stale-before-duplicate error order, busy ownership and transactional rollback.",
+          "PASS: concurrent actual DLL/core HostTx and HostRx, six real-event runs, exact ordered payload markers/tokens, partial tails, zero residual loans/published objects and no handle leak; max_batch=32."
+        ]
+      },
+      {
+        "program": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\production\\tests.exe",
+        "arguments": [],
+        "exit_code": 0,
+        "log": "D:\\rust\\wintun\\out\\exchange\\default-comparison-20261101\\test-logs\\01-tests.log",
+        "python_reported_tests": [],
+        "rust_reported_results": [],
+        "reported_pass_messages": [
+          "PASS: actual DLL completion notification: exactly one real SetEvent per nonempty poll; none for empty/oversized calls; guarded output bounds and uint64 cursor wrap.",
+          "PASS: actual shared-core object/byte limits, partial batches and slot retirement at 64/1500/32768/65535 bytes.",
+          "PASS: actual layout bounds at ring capacity 512: region_limit=256 MiB, queues 1/2/4/8 allow 512/512/510/254 slots (ring storage also counts).",
+          "PASS: guarded full-width token import/validation, duplicate slots, stale-before-duplicate error order, busy ownership and transactional rollback.",
+          "PASS: concurrent actual DLL/core HostTx and HostRx, six real-event runs, exact ordered payload markers/tokens, partial tails, zero residual loans/published objects and no handle leak; max_batch=64."
+        ]
+      }
+    ]
+  },
+  "measurement_source_files": [
+    {
+      "path": "include/packetbridge_v2_abi.h",
+      "sha256": "88fb207c65c6ddb7ebef3da2b7efdd030c4eed40e39b35d5a5c98fc8aba4d10a"
+    },
+    {
+      "path": "api/v2/packetbridge.h",
+      "sha256": "ab529be8bf776863d9abc4ae1a7d6399b81c970e4c69df7df0b7259c6537789c"
+    },
+    {
+      "path": "api/v2/session_queue.h",
+      "sha256": "76d54b796daa1ee3b3be6fcb2daf99b592d975c636c3adf179b372397ffc1e50"
+    },
+    {
+      "path": "api/v2/session_state.h",
+      "sha256": "f57bd5791fa3bf2ed616fde34576d8853f3bbd88c0a8ba15ee24a5876f4c2abc"
+    },
+    {
+      "path": "common/v2_core.c",
+      "sha256": "2426da12e2089d731acfd234dc7f66e5c73311da0b1734d5e7cd1cac7884e883"
+    },
+    {
+      "path": "common/v2_core.h",
+      "sha256": "2994f94b4b76f0e08b92474badc8f1d05b5214eb400fb2723c035093bea062a1"
+    },
+    {
+      "path": "tests/model/exchange_fixture.h",
+      "sha256": "3494a015f7d619dd2f72763ddac5888ab71f04b910d0d0288fb7058c0ab1fd58"
+    },
+    {
+      "path": "tests/model/exchange_tests.c",
+      "sha256": "01c8dc830f95fc2459ef2b49f83b89b375d6f48df89901f0f43b14bf47966548"
+    },
+    {
+      "path": "tests/bench/exchange_bench.c",
+      "sha256": "bbc238fded3d172bcb3f31d6d4245c66ac5b931aac6d56ae048dc22733616c3b"
+    },
+    {
+      "path": "tools/audit/compare-default-throughput.ps1",
+      "sha256": "17a276bf9df2e2a7e0cfa1534c4828faefe7635b284178692311dbfacea8e6d8"
+    },
+    {
+      "path": "tools/audit/analyze-default-throughput.py",
+      "sha256": "3f905f6008451e3ae08e87cfc2d58f5ead2947b100d53990b53aa094276c0490"
+    },
+    {
+      "path": "tools/audit/analyze-exchange.py",
+      "sha256": "e90d39a83a76fb814e9a46d98ea90c554f6db9c0440b5fc7ce7050593c4553e8"
+    },
+    {
+      "path": "tools/build/common.ps1",
+      "sha256": "b0175f123fae4f5cf429378e60d92180d9545281416bfb1451d05815651c740f"
+    }
+  ],
+  "archived_files": [
+    {
+      "path": "docs/default-throughput-comparison.csv",
+      "sha256": "6c425134cbb62600e53c1a6f6d9849210b7c013325fdcfe3d05b46322fdee297"
+    },
+    {
+      "path": "docs/default-throughput-comparison.samples.jsonl",
+      "sha256": "ee33b50bd1188a7e4b974fbce2748e03d3e74fa387bb5f611f0872c33965dc21"
+    }
+  ],
+  "compiler_flags": [
+    "/std:c17",
+    "/MT",
+    "/O2",
+    "/volatile:iso",
+    "/W4",
+    "/WX",
+    "/wd4505"
+  ],
+  "note": "Source tree SHA256 identifies the snapshot during measurement, before adding this report. Archived data are exact copies; selected measurement source hashes remain unchanged. Old defaults are replayed on current source, not a historical release binary."
+}

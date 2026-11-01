@@ -377,14 +377,14 @@ static VOID Chain(ULONG count,ULONG length,ULONG reject,ULONG empty,ULONG queues
         nbs[i]=(NET_BUFFER){.Length=length,.Queue=i%queues,.Reject=reject};
     }
     CHECK(PbV2Send(Current,nbls) && Completed==count && AfterPinRelease==1);
-    CHECK(Reads==(empty?0:count) && Windows>=1+(count+31)/32);
+    CHECK(Reads==(empty?0:count) && Windows>=1+(count+PB_TX_ATTEMPT_BUDGET-1)/PB_TX_ATTEMPT_BUDGET);
 #ifdef PB_SEND_FAULT_BASELINE
     CHECK(Controls==(empty?0:count));
 #else
     CHECK(!Controls);
 #endif
     for(ULONG i=0;i<count;++i) CHECK(nbls[i].Status==(empty?NDIS_STATUS_INVALID_LENGTH:full?NDIS_STATUS_RESOURCES:reject?NDIS_STATUS_INVALID_DATA:NDIS_STATUS_SUCCESS));
-    if(!empty && length<=4096) CHECK(MaxWork==min(count,32));
+    if(!empty && length<=4096) CHECK(MaxWork==min(count,PB_TX_ATTEMPT_BUDGET));
     if(full && length<=4096) {
 #if defined(PB_SEND_FAULT_BASELINE) || defined(PB_SEND_PREFIX_BASELINE)
         CHECK(Reserves==(count+PB_MAX_BATCH-1)/PB_MAX_BATCH); /* Historical per-window proof. */
@@ -399,22 +399,23 @@ static VOID Chain(ULONG count,ULONG length,ULONG reject,ULONG empty,ULONG queues
 }
 static VOID Boundary(ULONG action)
 {
-    Setup(1,64,64); NET_BUFFER_LIST nbls[96]={0}; NET_BUFFER nbs[96]={0};
-    for(ULONG i=0;i<96;++i) { nbls[i].Next=i<95?nbls+i+1:NULL; nbls[i].Nb=nbs+i; nbs[i].Length=64; }
-    Trigger=32; Action=action; CHECK(PbV2Send(Current,nbls) && Completed==96 && AfterPinRelease==1);
-    CHECK(Reads==(action==3?96u:32u));
-    for(ULONG i=0;i<96;++i) CHECK(nbls[i].Status==((i<32 || action==3)?NDIS_STATUS_SUCCESS:action==2?NDIS_STATUS_MEDIA_DISCONNECTED:NDIS_STATUS_PAUSED));
+    const ULONG total=3*PB_TX_ATTEMPT_BUDGET,capacity=2*PB_TX_ATTEMPT_BUDGET;
+    Setup(1,capacity,capacity); NET_BUFFER_LIST nbls[3*PB_TX_ATTEMPT_BUDGET]={0}; NET_BUFFER nbs[3*PB_TX_ATTEMPT_BUDGET]={0};
+    for(ULONG i=0;i<total;++i) { nbls[i].Next=i+1<total?nbls+i+1:NULL; nbls[i].Nb=nbs+i; nbs[i].Length=64; }
+    Trigger=PB_TX_ATTEMPT_BUDGET; Action=action; CHECK(PbV2Send(Current,nbls) && Completed==total && AfterPinRelease==1);
+    CHECK(Reads==(action==3?total:PB_TX_ATTEMPT_BUDGET));
+    for(ULONG i=0;i<total;++i) CHECK(nbls[i].Status==((i<PB_TX_ATTEMPT_BUDGET || action==3)?NDIS_STATUS_SUCCESS:action==2?NDIS_STATUS_MEDIA_DISCONNECTED:NDIS_STATUS_PAUSED));
     if(action==3) {
-        ULONG freeSlots=0; for(ULONG i=0;i<64;++i) freeSlots+=Session->Queues[0].TxSlots[i].State==PB_SLOT_FREE;
-        CHECK(Session->TxObjects==96 && freeSlots==32);
+        ULONG freeSlots=0; for(ULONG i=0;i<capacity;++i) freeSlots+=Session->Queues[0].TxSlots[i].State==PB_SLOT_FREE;
+        CHECK(Session->TxObjects==total && freeSlots==PB_TX_ATTEMPT_BUDGET);
     }
     Destroy();
 }
 static VOID MultiBufferAndCallbacks(VOID)
 {
-    Setup(1,64,64); NET_BUFFER_LIST nbl={0}; NET_BUFFER nbs[64]={0}; nbl.Nb=nbs;
-    for(ULONG i=0;i<64;++i) { nbs[i].Next=i<63?nbs+i+1:NULL; nbs[i].Length=64; }
-    CorruptAt=32; CHECK(PbV2Send(Current,&nbl) && Reads==32 && Describes==32 && Completed==1 && nbl.Status==NDIS_STATUS_RESOURCES && Session->Faulted);
+    Setup(1,2*PB_TX_ATTEMPT_BUDGET,2*PB_TX_ATTEMPT_BUDGET); NET_BUFFER_LIST nbl={0}; NET_BUFFER nbs[2*PB_TX_ATTEMPT_BUDGET]={0}; nbl.Nb=nbs;
+    for(ULONG i=0;i<2*PB_TX_ATTEMPT_BUDGET;++i) { nbs[i].Next=i+1<2*PB_TX_ATTEMPT_BUDGET?nbs+i+1:NULL; nbs[i].Length=64; }
+    CorruptAt=PB_TX_ATTEMPT_BUDGET; CHECK(PbV2Send(Current,&nbl) && Reads==PB_TX_ATTEMPT_BUDGET && Describes==PB_TX_ATTEMPT_BUDGET && Completed==1 && nbl.Status==NDIS_STATUS_RESOURCES && Session->Faulted);
     CHECK(!Session->TxObjects); Destroy();
     Setup(1,4,4); NET_BUFFER data={.Length=64},reply={.Length=64,.Kind=1},next={.Length=64}; data.Next=&reply; nbl.Nb=&data;
     CorruptAt=1; CHECK(PbV2Send(Current,&nbl) && Reads==2 && Describes==1 && !Replies && nbl.Status==NDIS_STATUS_RESOURCES && Session->Faulted); Destroy();
@@ -449,31 +450,31 @@ static VOID RecycleFaultPrefix(VOID)
 #endif
     CHECK(q->TxSlots[first.Slot].State==PB_SLOT_FREE && Session->Faulted);
     printf("PASS: recycle fault after valid prefix: transitions=%lu fault calls=%lu, prefix free, later token state=%lu.\n",RecycleAttempts,Faults,q->TxSlots[last.Slot].State);Destroy();
-    Setup(1,256,256);q=Session->Queues;PB_DESCRIPTOR valid[160]={0};
-    for(ULONG i=0;i<160;++i) {
+    Setup(1,8*PB_MAX_BATCH,8*PB_MAX_BATCH);q=Session->Queues;PB_DESCRIPTOR valid[5*PB_MAX_BATCH]={0};
+    for(ULONG i=0;i<5*PB_MAX_BATCH;++i) {
         CHECK(ProductionPoolReserve(&q->TxPool,&valid[i].Token)==PB_OK);
         CHECK(ProductionPoolTransition(&q->TxPool,&valid[i].Token,PB_SLOT_RESERVED,PB_SLOT_PUBLISHED)==PB_OK);
     }
-    PushRecycles(valid,160);
+    PushRecycles(valid,5*PB_MAX_BATCH);
 #ifdef PB_SEND_FAULT_BASELINE
     PbV2RecycleLocked(q);
 #else
     CHECK(PbV2RecycleLocked(q)==PB_OK);
 #endif
-    CHECK(RecycleAttempts==128 && !Faults && q->Rings[PB_QUEUE_TX_RECYCLE].Cursor==128);
+    CHECK(RecycleAttempts==4*PB_MAX_BATCH && !Faults && q->Rings[PB_QUEUE_TX_RECYCLE].Cursor==4*PB_MAX_BATCH);
 #if defined(PB_RECYCLE_TOKEN_BASELINE) || defined(PB_SEND_FAULT_BASELINE)
-    CHECK(RecycleSnapshotBytes==128*sizeof(PB_DESCRIPTOR));
+    CHECK(RecycleSnapshotBytes==4*PB_MAX_BATCH*sizeof(PB_DESCRIPTOR));
 #else
-    CHECK(RecycleSnapshotBytes==128*sizeof(PB_TOKEN));
+    CHECK(RecycleSnapshotBytes==4*PB_MAX_BATCH*sizeof(PB_TOKEN));
 #endif
-    printf("PASS: actual 128-item recycle budget: snapshot_bytes=%llu, exact token retirement and remaining ring cursor.\n",RecycleSnapshotBytes);
+    printf("PASS: actual %u-item recycle budget: snapshot_bytes=%llu, exact token retirement and remaining ring cursor.\n",4*PB_MAX_BATCH,RecycleSnapshotBytes);
 #ifdef PB_SEND_FAULT_BASELINE
     PbV2RecycleLocked(q);
 #else
     CHECK(PbV2RecycleLocked(q)==PB_OK);
 #endif
-    CHECK(RecycleAttempts==160 && !Faults);
-    for(ULONG i=0;i<256;++i) CHECK(q->TxSlots[i].State==PB_SLOT_FREE);Destroy();
+    CHECK(RecycleAttempts==5*PB_MAX_BATCH && !Faults);
+    for(ULONG i=0;i<8*PB_MAX_BATCH;++i) CHECK(q->TxSlots[i].State==PB_SLOT_FREE);Destroy();
 }
 #ifndef PB_SEND_FAULT_BASELINE
 static VOID RecycleTokenValidation(VOID)
@@ -723,7 +724,7 @@ static VOID FullPoolWindows(ULONG firstQueue)
         }
         NET_BUFFER nb[4096]={0};NET_BUFFER_LIST nbl[4096]={0};
         for(ULONG i=0;i<4096;++i) {nb[i].Length=64;nb[i].Queue=i%queues;nbl[i].Nb=nb+i;if(i<4095)nbl[i].Next=nbl+i+1;}
-        CHECK(PbV2Send(Current,nbl) && Completed==4096 && Windows==129 && !Describes && !Faults);
+        CHECK(PbV2Send(Current,nbl) && Completed==4096 && Windows==1+(4096+PB_TX_ATTEMPT_BUDGET-1)/PB_TX_ATTEMPT_BUDGET && !Describes && !Faults);
         CHECK(Current->Probe.OffloadRejected==4096);
         printf("Measured full-pool reservations: queues=%lu send_windows=%lu attempts=%lu no returned tokens.\n",queues,Windows-1,Reserves);
         CHECK(Reserves==queues);

@@ -1,0 +1,81 @@
+{
+  "configurations": 106,
+  "samples": 742,
+  "objects_per_sample": 4194304,
+  "functional_processes": 35,
+  "measurement_sources_sha256": {
+    "tests/model/exchange_fixture.h": "3494a015f7d619dd2f72763ddac5888ab71f04b910d0d0288fb7058c0ab1fd58",
+    "tests/model/exchange_tests.c": "01c8dc830f95fc2459ef2b49f83b89b375d6f48df89901f0f43b14bf47966548",
+    "tests/bench/exchange_bench.c": "21c2c091008b0429335d5ee01b389c0beb72211de06ab51c340017cd8eb37b09",
+    "api/v2/session_queue.h": "76d54b796daa1ee3b3be6fcb2daf99b592d975c636c3adf179b372397ffc1e50",
+    "api/v2/session_state.h": "f57bd5791fa3bf2ed616fde34576d8853f3bbd88c0a8ba15ee24a5876f4c2abc",
+    "common/v2_core.c": "2426da12e2089d731acfd234dc7f66e5c73311da0b1734d5e7cd1cac7884e883",
+    "include/packetbridge_v2_abi.h": "c9615c0fa6efd33bd9a9ca72b8373b252a5712751c55891f4fa823faedddc666"
+  },
+  "records": [
+    {
+      "path": "out/exchange/confirmed-128-bitmap/confirm-evidence.json",
+      "source_tree_sha256": "1818694ae7dbb95f311f6d9c43ad2c118df92ea40406fc169cc363df71414382",
+      "cases": 10,
+      "samples": 70,
+      "sha256": "e26d3823b9f7f0263d4c0a95367ba67efc56ac6824646a8bef21fd56d91894fd"
+    },
+    {
+      "path": "out/exchange/confirmed-128-filter/confirm-evidence.json",
+      "source_tree_sha256": "1818694ae7dbb95f311f6d9c43ad2c118df92ea40406fc169cc363df71414382",
+      "cases": 10,
+      "samples": 70,
+      "sha256": "2330c4ce422c4635e215afe183b7b80f9ace4b9d948d8c4c506111b0ef649778"
+    },
+    {
+      "path": "out/exchange/confirmed-256-bitmap/confirm-evidence.json",
+      "source_tree_sha256": "1818694ae7dbb95f311f6d9c43ad2c118df92ea40406fc169cc363df71414382",
+      "cases": 10,
+      "samples": 70,
+      "sha256": "45c1b27e7c8a8e5543460980948ba839ee974bae7de835e8180676259ba249aa"
+    },
+    {
+      "path": "out/exchange/confirmed-256-filter/confirm-evidence.json",
+      "source_tree_sha256": "1818694ae7dbb95f311f6d9c43ad2c118df92ea40406fc169cc363df71414382",
+      "cases": 10,
+      "samples": 70,
+      "sha256": "1f42898bcc26bee77cd51ad68dbf400d94540ddd784b84923945476ac0976d50"
+    },
+    {
+      "path": "out/exchange/confirmed-64-bitmap/confirm-evidence.json",
+      "source_tree_sha256": "1818694ae7dbb95f311f6d9c43ad2c118df92ea40406fc169cc363df71414382",
+      "cases": 10,
+      "samples": 70,
+      "sha256": "d2d9e1f4da595cb76c4cf1705b1fdedfb3990d74ec28152ea86028459fa88099"
+    },
+    {
+      "path": "out/exchange/confirmed-64-filter/confirm-evidence.json",
+      "source_tree_sha256": "1818694ae7dbb95f311f6d9c43ad2c118df92ea40406fc169cc363df71414382",
+      "cases": 26,
+      "samples": 182,
+      "sha256": "887c81cf7500bccf4e0233bc6e05d1956d0d600f3900c5e37f1afbd5ffcf178b"
+    },
+    {
+      "path": "out/exchange/confirmed-controls/confirm-evidence.json",
+      "source_tree_sha256": "1818694ae7dbb95f311f6d9c43ad2c118df92ea40406fc169cc363df71414382",
+      "cases": 18,
+      "samples": 126,
+      "sha256": "149821853e50320d8cf0913f28eb42750b3d6e0cc3a2b97b71431702a1a49b19"
+    },
+    {
+      "path": "out/exchange/confirmed-memory-controls/confirm-evidence.json",
+      "source_tree_sha256": "1818694ae7dbb95f311f6d9c43ad2c118df92ea40406fc169cc363df71414382",
+      "cases": 12,
+      "samples": 84,
+      "sha256": "444869c38fba316a53b9e64e5d98366611eac747fbf94ddf4040febc555bade5"
+    }
+  ],
+  "kernel_runtime_tested": false,
+  "production_defaults_changed": false,
+  "full_validation": {
+    "tests": "out\\packet-path-v2\\2.0.0\\b37e12cd33d0\\test-results.json",
+    "safety": "out\\packet-path-v2\\2.0.0\\b37e12cd33d0\\safety\\safety-results.json",
+    "matrix_smoke": "out\\exchange\\matrix-smoke\\matrix-evidence.json",
+    "all_passed": true
+  }
+}
