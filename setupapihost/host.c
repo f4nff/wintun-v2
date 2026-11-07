@@ -10,6 +10,7 @@
 #include <shellapi.h>
 #include <intsafe.h>
 #include <stdlib.h>
+#include "../common/system_library.h"
 
 #define EXPORT comment(linker, "/EXPORT:" __FUNCTION__ "=" __FUNCDNAME__)
 
@@ -18,7 +19,7 @@ DelayedLoadLibraryHook(unsigned dliNotify, PDelayLoadInfo pdli)
 {
     if (dliNotify != dliNotePreLoadLibrary)
         return NULL;
-    HMODULE Library = LoadLibraryExA(pdli->szDll, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE Library = LoadSystemLibrary(pdli->szDll);
     if (!Library)
         abort();
     return (FARPROC)Library;
@@ -50,15 +51,27 @@ WriteFormatted(_In_ DWORD StdHandle, _In_z_ LPCWSTR Template, ...)
     return Size / sizeof(*FormattedMessage);
 }
 
+/* The caller owns the parsed array, including argument-validation failures.
+ * CommandLineToArgvW need not initialize Argc when it returns NULL. */
+static DWORD GetInstanceArguments(_Out_ LPWSTR **Argv)
+{
+    int Argc = 0;
+    *Argv = CommandLineToArgvW(GetCommandLineW(), &Argc);
+    if (!*Argv)
+    {
+        DWORD Error = GetLastError();
+        return Error ? Error : ERROR_GEN_FAILURE;
+    }
+    return Argc < 3 ? ERROR_INVALID_PARAMETER : ERROR_SUCCESS;
+}
+
 VOID __stdcall RemoveInstance(HWND hwnd, HINSTANCE hinst, LPSTR lpszCmdLine, int nCmdShow)
 {
 #pragma EXPORT
 
-    DWORD LastError = ERROR_SUCCESS;
-    int Argc;
-    LPWSTR *Argv = CommandLineToArgvW(GetCommandLineW(), &Argc);
-
-    if (Argc < 3)
+    LPWSTR *Argv = NULL;
+    DWORD LastError = GetInstanceArguments(&Argv);
+    if (LastError != ERROR_SUCCESS)
         goto cleanup;
     WCHAR *InstanceId = Argv[2];
 
@@ -99,11 +112,9 @@ VOID __stdcall EnableInstance(HWND hwnd, HINSTANCE hinst, LPSTR lpszCmdLine, int
 {
 #pragma EXPORT
 
-    DWORD LastError = ERROR_SUCCESS;
-    int Argc;
-    LPWSTR *Argv = CommandLineToArgvW(GetCommandLineW(), &Argc);
-
-    if (Argc < 3)
+    LPWSTR *Argv = NULL;
+    DWORD LastError = GetInstanceArguments(&Argv);
+    if (LastError != ERROR_SUCCESS)
         goto cleanup;
     WCHAR *InstanceId = Argv[2];
 
@@ -142,11 +153,9 @@ VOID __stdcall DisableInstance(HWND hwnd, HINSTANCE hinst, LPSTR lpszCmdLine, in
 {
 #pragma EXPORT
 
-    DWORD LastError = ERROR_SUCCESS;
-    int Argc;
-    LPWSTR *Argv = CommandLineToArgvW(GetCommandLineW(), &Argc);
-
-    if (Argc < 3)
+    LPWSTR *Argv = NULL;
+    DWORD LastError = GetInstanceArguments(&Argv);
+    if (LastError != ERROR_SUCCESS)
         goto cleanup;
     WCHAR *InstanceId = Argv[2];
 

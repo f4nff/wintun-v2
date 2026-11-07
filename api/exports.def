@@ -1,17 +1,22 @@
 LIBRARY wintun.dll
 EXPORTS
-	WintunAllocateSendPacket
-	WintunCreateAdapter
-	WintunEndSession
-	WintunOpenAdapter
-	WintunCloseAdapter
-	WintunGetAdapterLUID
-	WintunGetReadWaitEvent
-	WintunGetRunningDriverVersion
-	WintunReceivePacket
-	WintunReleaseReceivePacket
-	WintunSendPacket
-	WintunDeleteDriver
-	WintunSetLogger
-	WintunStartSession
-	WintunShutdown
+    WintunAllocateSendPacket @1
+    WintunCloseAdapter @2
+    WintunCreateAdapter @3
+    WintunDeleteDriver @4
+    WintunEndSession @5
+    WintunGetAdapterLUID @6
+    WintunGetReadWaitEvent @7
+    WintunGetRunningDriverVersion @8
+    WintunOpenAdapter @9
+    WintunReceivePacket @10
+    WintunReleaseReceivePacket @11
+    WintunSendPacket @12
+    WintunSetLogger @13
+    WintunStartSession @14
+    WintunShutdown @15
+    PbGetInterfaceV2 @16
+    PbGetLifecycleInterface @17
+    PbGetPacketInterface @18
+    PbCreateAdapterEx @19
+    PbCreateAdapterEx2 @20

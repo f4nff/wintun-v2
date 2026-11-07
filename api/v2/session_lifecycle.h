@@ -363,8 +363,13 @@ release_resources:
         s->Scheduled = FALSE; NotifyLocked(s); ReleaseSRWLockExclusive(&s->State); break;
 parked:
         /* ProgressEvent belongs to lifecycle, never steal a queue owner's UserEvent.
-         * The diagnostic fallback is low frequency, including old driver failure paths. */
-        WaitForSingleObject(s->ProgressEvent, 1000);
+         * The diagnostic fallback is low frequency, including old driver failure
+         * paths. A failed wait does not consume that delay: retain all owners and
+         * back off before retrying I/O, without holding State or the data gates. */
+        {
+            DWORD waited = WaitForSingleObject(s->ProgressEvent, 1000);
+            if (waited != WAIT_OBJECT_0 && waited != WAIT_TIMEOUT) Sleep(1000);
+        }
         AcquireSRWLockExclusive(&s->State); s->Progress.Rechecks++; ReleaseSRWLockExclusive(&s->State);
     }
     if (InterlockedCompareExchange(&s->ResourcesClosed, 0, 0)) {

@@ -11,17 +11,17 @@
 /**
  * Locates RT_RCDATA resource memory address and size.
  *
- * @param ResourceName         Name of the RT_RCDATA resource. Use MAKEINTRESOURCEW to locate resource by ID.
+ * @param ResourceName         Name of the RT_RCDATA resource or MAKEINTRESOURCEW identifier.
  *
  * @param Size                 Pointer to a variable to receive resource size.
  *
  * @return Resource address on success. If the function fails, the return value is NULL. To get extended error
- *         information, call GetLastError.
+ *         information, call GetLastError. Size is zero on failure.
  */
 _Must_inspect_result_
 _Return_type_success_(return != NULL)
 _Post_maybenull_
-_Post_readable_byte_size_(*Size) const VOID *ResourceGetAddress(_In_z_ LPCWSTR ResourceName, _Out_ DWORD *Size);
+_Post_readable_byte_size_(*Size) const VOID *ResourceGetAddress(_In_ LPCWSTR ResourceName, _Out_ DWORD *Size);
 
 /**
  * Copies resource to a file.
@@ -35,12 +35,12 @@ _Post_readable_byte_size_(*Size) const VOID *ResourceGetAddress(_In_z_ LPCWSTR R
  */
 _Return_type_success_(return != FALSE)
 BOOL
-ResourceCopyToFile(_In_z_ LPCWSTR DestinationPath, _In_z_ LPCWSTR ResourceName);
+ResourceCopyToFile(_In_z_ LPCWSTR DestinationPath, _In_ LPCWSTR ResourceName);
 
 /**
  * Creates a temporary directory.
  *
- * @param RandomTempSubDirectory    Name of random temporary directory.
+ * @param RandomTempSubDirectory    Owned directory path on success; empty on failure.
  *
  * @return If the function succeeds, the return value is nonzero. If the function fails, the return value is zero. To
  *         get extended error information, call GetLastError.

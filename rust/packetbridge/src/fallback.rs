@@ -1,3 +1,6 @@
+//! Select API profiles within the unified DLL/SYS package. `Legacy` means the
+//! Wintun compatibility API over the same v2 driver. It cannot bypass native
+//! platform/build checks or switch to an unrelated official Wintun driver.
 //! Fall back only after the corresponding native operation is acknowledged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -49,6 +52,9 @@ pub struct Availability {
 }
 pub fn select(mode: Mode, available: Availability) -> Option<Profile> {
     let modern = available.os_supported && available.matching_modern;
+    if !modern {
+        return None;
+    }
     match mode {
         Mode::Legacy => available.legacy_verified.then_some(Profile::Legacy),
         Mode::Plain => modern.then_some(Profile::Modern { mask: 0 }),
@@ -168,20 +174,24 @@ impl Controller {
 mod tests {
     use super::*;
     #[test]
-    fn old_os_and_mismatched_components_use_verified_complete_legacy() {
+    fn compatibility_cannot_bypass_native_platform_or_build_checks() {
         let mut available = Availability {
             os_supported: false,
             matching_modern: true,
             validated_mask: 0x1ff,
             legacy_verified: true,
         };
-        assert_eq!(select(Mode::Auto, available), Some(Profile::Legacy));
+        assert_eq!(select(Mode::Auto, available), None);
+        assert_eq!(select(Mode::Legacy, available), None);
         assert_eq!(select(Mode::Offloads, available), None);
         available.os_supported = true;
         available.matching_modern = false;
-        assert_eq!(select(Mode::Auto, available), Some(Profile::Legacy));
-        available.legacy_verified = false;
         assert_eq!(select(Mode::Auto, available), None);
+        available.matching_modern = true;
+        assert_eq!(select(Mode::Legacy, available), Some(Profile::Legacy));
+        available.legacy_verified = false;
+        assert_eq!(select(Mode::Legacy, available), None);
+        assert_eq!(select(Mode::Auto, available), Some(Profile::Modern { mask: 0x1ff }));
     }
     #[test]
     fn plain_mode_never_enables_requested_but_unvalidated_offloads() {

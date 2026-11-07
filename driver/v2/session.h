@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /* Included after offload_probe.h; all shared offsets come from a private PB_LAYOUT. */
 #pragma once
+#include "platform_nbl.h"
+#include "platform_mdl.h"
 
 #include "session_fault.h"
 #include "session_references.h"
@@ -20,7 +22,7 @@
 /* RESOURCES indications return synchronously; these control buffers never enter a shared ring. */
 static NDIS_STATUS PbV2ControlReply(TUN_CTX *ctx, const UCHAR *reply, ULONG length)
 {
-    UCHAR *data = ExAllocatePool2(POOL_FLAG_NON_PAGED, length, TUN_MEMORY_TAG);
+    UCHAR *data = ExAllocatePoolZero(NonPagedPool, length, TUN_MEMORY_TAG);
     if (!data) return NDIS_STATUS_RESOURCES;
     RtlCopyMemory(data, reply, length);
     MDL *mdl = IoAllocateMdl(data, length, FALSE, FALSE, NULL);
@@ -34,9 +36,9 @@ static NDIS_STATUS PbV2ControlReply(TUN_CTX *ctx, const UCHAR *reply, ULONG leng
         NET_BUFFER_LIST_INFO(nbl, NetBufferListFrameType) = (PVOID)(ULONG_PTR)(((ULONG)reply[13] << 8) | reply[12]);
         NET_BUFFER_LIST_NEXT_NBL_EX(nbl) = NULL;
         NET_BUFFER_LIST_INFO(nbl, TcpIpChecksumNetBufferListInfo) = NULL;
-        NET_BUFFER_LIST_INFO(nbl, TcpRecvSegCoalesceInfo) = NULL;
-        NET_BUFFER_LIST_INFO(nbl, UdpRecvSegCoalesceOffloadInfo) = NULL;
-        NET_BUFFER_LIST_INFO(nbl, RscTcpTimestampDelta) = NULL;
+        PB_NBL_SET(nbl, TcpRecvSegCoalesceInfo, 30, NULL);
+        PB_NBL_SET(nbl, UdpRecvSegCoalesceOffloadInfo, 89, NULL);
+        PB_NBL_SET(nbl, RscTcpTimestampDelta, 30, NULL);
         NET_BUFFER_LIST_INFO(nbl, Ieee8021QNetBufferListInfo) = NULL;
         NET_BUFFER_LIST_NEXT_NBL(nbl) = NULL;
         NET_BUFFER_LIST_STATUS(nbl) = NDIS_STATUS_SUCCESS;
@@ -70,7 +72,7 @@ static NTSTATUS PbV2Register(TUN_CTX *ctx, IRP *irp)
     ExAcquireResourceExclusiveLite(&ctx->Device.RegistrationLock, TRUE);
     NTSTATUS status = STATUS_ALREADY_INITIALIZED;
     if (ctx->Device.OwningFileObject) goto done;
-    PB_KERNEL_SESSION *s = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*s), TUN_MEMORY_TAG);
+    PB_KERNEL_SESSION *s = ExAllocatePoolZero(NonPagedPool, sizeof(*s), TUN_MEMORY_TAG);
     if (!s) { status = STATUS_INSUFFICIENT_RESOURCES; goto done; }
     RtlZeroMemory(s, sizeof(*s)); s->Ctx = ctx; s->Layout = layout; s->Epoch = r.Epoch;
     KeInitializeEvent(&s->StartEvent, NotificationEvent, FALSE); KeInitializeEvent(&s->StopEvent, NotificationEvent, FALSE);
@@ -81,7 +83,7 @@ static NTSTATUS PbV2Register(TUN_CTX *ctx, IRP *irp)
     try { MmProbeAndLockPages(s->Mdl, irp->RequestorMode, IoWriteAccess); }
     except(EXCEPTION_EXECUTE_HANDLER) { status = GetExceptionCode(); goto fail; }
     s->PagesLocked = TRUE;
-    s->Region = MmGetSystemAddressForMdlSafe(s->Mdl, NormalPagePriority | MdlMappingNoExecute);
+    s->Region = PbV2MapMdl(s->Mdl);
     if (!s->Region) { status = STATUS_INSUFFICIENT_RESOURCES; goto fail; }
     RtlCopyMemory(s->Region, &layout, sizeof(layout));
     s->Lifecycle = (PB_SHARED_LIFECYCLE *)(s->Region + layout.LifecycleOffset);
@@ -103,14 +105,14 @@ static NTSTATUS PbV2Register(TUN_CTX *ctx, IRP *irp)
             if (q->KernelEvent == p->KernelEvent || q->KernelEvent == p->UserEvent ||
                 q->UserEvent == p->KernelEvent || q->UserEvent == p->UserEvent) goto fail;
         }
-        q->TxSlots = ExAllocatePool2(POOL_FLAG_NON_PAGED, layout.SlotCount * sizeof(*q->TxSlots), TUN_MEMORY_TAG);
-        q->RxSlots = ExAllocatePool2(POOL_FLAG_NON_PAGED, layout.SlotCount * sizeof(*q->RxSlots), TUN_MEMORY_TAG);
-        q->Pending = ExAllocatePool2(POOL_FLAG_NON_PAGED, layout.RingCapacity * sizeof(*q->Pending), TUN_MEMORY_TAG);
+        q->TxSlots = ExAllocatePoolZero(NonPagedPool, layout.SlotCount * sizeof(*q->TxSlots), TUN_MEMORY_TAG);
+        q->RxSlots = ExAllocatePoolZero(NonPagedPool, layout.SlotCount * sizeof(*q->RxSlots), TUN_MEMORY_TAG);
+        q->Pending = ExAllocatePoolZero(NonPagedPool, layout.RingCapacity * sizeof(*q->Pending), TUN_MEMORY_TAG);
         if (!q->TxSlots || !q->RxSlots || !q->Pending) { status = STATUS_INSUFFICIENT_RESOURCES; goto fail; }
         RtlZeroMemory(q->RxSlots, layout.SlotCount * sizeof(*q->RxSlots));
         /* Bounded, optional private copies: checksum success never depends on user-mutable bytes. */
-        q->Scratch = ExAllocatePool2(POOL_FLAG_NON_PAGED, PB_BLOCK_SIZE, TUN_MEMORY_TAG);
-        for (ULONG b = 0; b < 2; ++b) q->CoalesceBuffers[b] = ExAllocatePool2(POOL_FLAG_NON_PAGED, PB_BLOCK_SIZE, TUN_MEMORY_TAG);
+        q->Scratch = ExAllocatePoolZero(NonPagedPool, PB_BLOCK_SIZE, TUN_MEMORY_TAG);
+        for (ULONG b = 0; b < 2; ++b) q->CoalesceBuffers[b] = ExAllocatePoolZero(NonPagedPool, PB_BLOCK_SIZE, TUN_MEMORY_TAG);
         (VOID)PbPoolInitialize(&q->TxPool, q->TxSlots, layout.SlotCount, r.Epoch, (USHORT)i);
         for (ULONG ring = 0; ring < PB_QUEUE_COUNT; ++ring) {
             RtlZeroMemory(s->Region + layout.Queues[i].Rings[ring], sizeof(PB_QUEUE_SHARED));
@@ -137,18 +139,7 @@ done:
     return status;
 }
 
-/* Called with RegistrationLock exclusively held, after the common owner/list cleanup. */
-static VOID PbV2Unregister(TUN_CTX *ctx)
-{
-    PB_KERNEL_SESSION *s = ctx->V2;
-    KIRQL irql = ExAcquireSpinLockExclusive(&ctx->TransitionLock);
-    InterlockedExchange(&s->Draining, 1); KeSetEvent(&ctx->Device.Disconnected, IO_NO_INCREMENT, FALSE);
-    ctx->V2 = NULL; WriteRelease(&ctx->Probe.V2SessionActive, 0); WriteRelease(&ctx->Probe.AllowedMask, 0);
-    ExReleaseSpinLockExclusive(&ctx->TransitionLock, irql);
-    PbV2Progress(s, TRUE);
-    PbReportOffload(ctx);
-    PbV2Free(s);
-}
+#include "session_unregister.h"
 
 #include "session_pause.h"
 

@@ -5,8 +5,10 @@
 
 #include <devguid.h>
 #include <cfgmgr32.h>
+#include "../include/packetbridge_identity.h"
+#include "../include/packetbridge_helper_protocol.h"
 
-#define WINTUN_HWID L"Wintun"
+#define WINTUN_HWID PB_HARDWARE_ID
 
 VOID __stdcall CreateInstanceWin7(HWND hwnd, HINSTANCE hinst, LPSTR lpszCmdLine, int nCmdShow)
 {
@@ -98,5 +100,5 @@ cleanupDriverInfo:
 cleanupDevInfo:
     SetupDiDestroyDeviceInfoList(DevInfo);
 cleanup:
-    WriteFormatted(STD_OUTPUT_HANDLE, L"%1!X! %2!s!", LastError, LastError == ERROR_SUCCESS ? InstanceId : L"\"\"");
+    WriteFormatted(STD_OUTPUT_HANDLE, PB_HELPER_CREATE_RESPONSE_FORMAT, LastError, LastError == ERROR_SUCCESS ? InstanceId : L"\"\"");
 }

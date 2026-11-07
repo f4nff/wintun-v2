@@ -412,7 +412,7 @@ PB_RESULT PbAdmitReceive(const PB_LAYOUT *layout, uint64_t epoch, uint32_t queue
 {
     if (!layout || !slots || !d || !complete || queue >= layout->QueueCount) return PB_INVALID;
     *complete = 1;
-    int scoped = d->Token.Epoch == epoch && d->Token.Queue == queue && d->Token.Slot < layout->SlotCount;
+    int scoped = epoch && d->Token.Epoch == epoch && d->Token.Queue == queue && d->Token.Slot < layout->SlotCount;
     if (scoped) {
         PB_RX_SLOT *slot = slots + d->Token.Slot;
         /* Even an otherwise malformed duplicate must not release an NDIS-held original. */
@@ -421,11 +421,15 @@ PB_RESULT PbAdmitReceive(const PB_LAYOUT *layout, uint64_t epoch, uint32_t queue
             return PB_STALE;
         }
         if (slot->Active) { *complete = 0; return PB_BUSY; }
+        /* A failure completion also ends this generation. Remember it before
+         * validating the payload, so a later corrected/repeated descriptor
+         * cannot acquire a second completion or an NDIS reference. Foreign
+         * tokens and generation zero never retire a local slot. */
+        if (d->Token.Generation) slot->Generation = d->Token.Generation;
     }
     PB_RESULT result = PbValidateDescriptor(layout, epoch, queue, 1, d, 1);
     if (result != PB_OK) return result;
     if (draining) return PB_STOPPED;
-    slots[d->Token.Slot].Generation = d->Token.Generation;
     slots[d->Token.Slot].Active = 1;
     return PB_OK;
 }

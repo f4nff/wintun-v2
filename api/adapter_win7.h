@@ -3,62 +3,8 @@
  * Copyright (C) 2018-2026 WireGuard LLC. All Rights Reserved.
  */
 
-static const DEVPROPKEY DEVPKEY_Wintun_OwningProcess = {
-    { 0x3361c968, 0x2f2e, 0x4660, { 0xb4, 0x7e, 0x69, 0x9c, 0xdc, 0x4c, 0x32, 0xb9 } },
-    DEVPROPID_FIRST_USABLE + 3
-};
-
-typedef struct _OWNING_PROCESS
-{
-    DWORD ProcessId;
-    FILETIME CreationTime;
-} OWNING_PROCESS;
-
-_Must_inspect_result_
-static _Return_type_success_(return != FALSE)
-BOOL
-WaitForInterfaceWin7(_In_ HDEVINFO DevInfo, _In_ SP_DEVINFO_DATA *DevInfoData, _In_ LPCWSTR DevInstanceId)
-{
-    ULONG Status, Number;
-    DWORD ValType, Zero;
-    WCHAR *FileName = NULL;
-    HKEY Key = INVALID_HANDLE_VALUE;
-    HANDLE FileHandle = INVALID_HANDLE_VALUE;
-    BOOLEAN Ret = FALSE;
-    for (DWORD Tries = 0; Tries < 1500; ++Tries)
-    {
-        if (Tries)
-            if (!MainOperationSleep(10)) break;
-        if (Key == INVALID_HANDLE_VALUE)
-            Key = SetupDiOpenDevRegKey(DevInfo, DevInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_QUERY_VALUE);
-        if (!FileName)
-            FileName = AdapterGetDeviceObjectFileName(DevInstanceId);
-        if (FileName && FileHandle == INVALID_HANDLE_VALUE)
-            FileHandle = CreateFileW(
-                FileName,
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                NULL,
-                OPEN_EXISTING,
-                0,
-                NULL);
-        Zero = 0;
-        if (FileName && FileHandle != INVALID_HANDLE_VALUE && Key != INVALID_HANDLE_VALUE && Key &&
-            RegQueryValueExW(Key, L"NetCfgInstanceId", NULL, &ValType, NULL, &Zero) != ERROR_MORE_DATA &&
-            CM_Get_DevNode_Status(&Status, &Number, DevInfoData->DevInst, 0) == CR_SUCCESS &&
-            !(Status & DN_HAS_PROBLEM) && !Number)
-        {
-            Ret = TRUE;
-            break;
-        }
-    }
-    if (Key != INVALID_HANDLE_VALUE && Key)
-        RegCloseKey(Key);
-    if (FileHandle != INVALID_HANDLE_VALUE)
-        CloseHandle(FileHandle);
-    Free(FileName);
-    return Ret;
-}
+#include "orphan_owner.h"
+#include "adapter_wait_win7.h"
 
 _Must_inspect_result_
 static _Return_type_success_(return != FALSE)
@@ -81,7 +27,7 @@ CreateAdapterWin7(_Inout_ WINTUN_ADAPTER *Adapter, _In_z_ LPCWSTR Name, _In_z_ L
         if (!CreateInstanceWin7ViaRundll32(Adapter->DevInstanceID))
         {
             LastError = LOG_LAST_ERROR(L"Failed to create device instance");
-            goto cleanup;
+            goto cleanupDevInfo;
         }
         if (!SetupDiOpenDeviceInfoW(DevInfo, Adapter->DevInstanceID, NULL, DIOD_INHERIT_CLASSDRVS, &DevInfoData))
         {
@@ -247,107 +193,4 @@ CreateAdapterPostWin7(_Inout_ WINTUN_ADAPTER *Adapter, _In_z_ LPCWSTR TunnelType
         SPDRP_DEVICEDESC,
         (PBYTE)TunnelTypeName,
         (DWORD)((wcslen(TunnelTypeName) + 1) * sizeof(TunnelTypeName[0])));
-}
-
-static BOOL
-ProcessIsStale(_In_ OWNING_PROCESS *OwningProcess)
-{
-    HANDLE Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, OwningProcess->ProcessId);
-    if (!Process)
-        return TRUE;
-    FILETIME CreationTime, Unused;
-    BOOL Ret = GetProcessTimes(Process, &CreationTime, &Unused, &Unused, &Unused);
-    CloseHandle(Process);
-    if (!Ret)
-        return FALSE;
-    return !!memcmp(&CreationTime, &OwningProcess->CreationTime, sizeof(CreationTime));
-}
-
-VOID AdapterCleanupOrphanedDevicesWin7(VOID)
-{
-    HDEVINFO DevInfo = SetupDiGetClassDevsExW(&GUID_DEVCLASS_NET, WINTUN_ENUMERATOR, NULL, 0, NULL, NULL, NULL);
-    if (DevInfo == INVALID_HANDLE_VALUE)
-    {
-        if (GetLastError() != ERROR_INVALID_DATA)
-            LOG_LAST_ERROR(L"Failed to get adapters");
-        return;
-    }
-
-    SP_DEVINFO_DATA DevInfoData = { .cbSize = sizeof(DevInfoData) };
-    for (DWORD EnumIndex = 0;; ++EnumIndex)
-    {
-        if (AdapterCleanupCancelled()) break;
-        if (!SetupDiEnumDeviceInfo(DevInfo, EnumIndex, &DevInfoData))
-        {
-            if (GetLastError() == ERROR_NO_MORE_ITEMS)
-                break;
-            continue;
-        }
-
-        OWNING_PROCESS OwningProcess;
-        DEVPROPTYPE PropType;
-        if (SetupDiGetDevicePropertyW(
-                DevInfo,
-                &DevInfoData,
-                &DEVPKEY_Wintun_OwningProcess,
-                &PropType,
-                (PBYTE)&OwningProcess,
-                sizeof(OwningProcess),
-                NULL,
-                0) &&
-            PropType == DEVPROP_TYPE_BINARY && !ProcessIsStale(&OwningProcess))
-            continue;
-
-        WCHAR Name[MAX_ADAPTER_NAME] = L"<unknown>";
-        SetupDiGetDevicePropertyW(
-            DevInfo,
-            &DevInfoData,
-            &DEVPKEY_Wintun_Name,
-            &PropType,
-            (PBYTE)Name,
-            MAX_ADAPTER_NAME * sizeof(Name[0]),
-            NULL,
-            0);
-        if (!AdapterRemoveInstance(DevInfo, &DevInfoData))
-        {
-            LOG_LAST_ERROR(L"Failed to remove orphaned adapter \"%s\"", Name);
-            continue;
-        }
-        LOG(WINTUN_LOG_INFO, L"Removed orphaned adapter \"%s\"", Name);
-    }
-    SetupDiDestroyDeviceInfoList(DevInfo);
-}
-
-VOID AdapterCleanupLegacyDevices(VOID)
-{
-    HDEVINFO DevInfo = SetupDiGetClassDevsExW(&GUID_DEVCLASS_NET, L"ROOT\\NET", NULL, 0, NULL, NULL, NULL);
-    if (DevInfo == INVALID_HANDLE_VALUE)
-        return;
-    SP_DEVINFO_DATA DevInfoData = { .cbSize = sizeof(DevInfoData) };
-    for (DWORD EnumIndex = 0;; ++EnumIndex)
-    {
-        if (AdapterCleanupCancelled()) break;
-        if (!SetupDiEnumDeviceInfo(DevInfo, EnumIndex, &DevInfoData))
-        {
-            if (GetLastError() == ERROR_NO_MORE_ITEMS)
-                break;
-            continue;
-        }
-        WCHAR HardwareIDs[0x400] = { 0 };
-        DWORD ValueType, Size = sizeof(HardwareIDs) - sizeof(HardwareIDs[0]);
-        if (!SetupDiGetDeviceRegistryPropertyW(
-                DevInfo, &DevInfoData, SPDRP_HARDWAREID, &ValueType, (PBYTE)HardwareIDs, Size, &Size) ||
-            Size > sizeof(HardwareIDs) - sizeof(HardwareIDs[0]))
-            continue;
-        Size /= sizeof(HardwareIDs[0]);
-        for (WCHAR *P = HardwareIDs; P < HardwareIDs + Size; P += wcslen(P) + 1)
-        {
-            if (!_wcsicmp(P, WINTUN_HWID))
-            {
-                AdapterRemoveInstance(DevInfo, &DevInfoData);
-                break;
-            }
-        }
-    }
-    SetupDiDestroyDeviceInfoList(DevInfo);
 }

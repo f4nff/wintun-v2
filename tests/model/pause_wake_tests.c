@@ -9,6 +9,13 @@ typedef VOID KSTART_ROUTINE(PVOID);
 #define Executive 0
 #define KernelMode 0
 #define WaitAny 0
+static __declspec(thread) LONG CriticalDepth;
+static VOID KeEnterCriticalRegion(VOID) {CHECK(!CriticalDepth++);}
+static VOID KeLeaveCriticalRegion(VOID) {CHECK(CriticalDepth--==1);}
+static VOID ExAcquireResourceSharedLite(SRWLOCK *lock,BOOLEAN wait)
+{CHECK(CriticalDepth==1&&wait);AcquireSRWLockShared(lock);}
+static VOID ExReleaseResourceLite(SRWLOCK *lock)
+{CHECK(CriticalDepth==1);ReleaseSRWLockShared(lock);}
 static KIRQL ExAcquireSpinLockShared(SRWLOCK *lock) {AcquireSRWLockShared(lock);return 0;}
 static VOID ExReleaseSpinLockShared(SRWLOCK *lock,KIRQL irql) {CHECK(!irql);ReleaseSRWLockShared(lock);}
 static ULONG PbEffectiveMask(TUN_CTX *ctx) {(void)ctx;return 0;}

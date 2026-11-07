@@ -19,10 +19,12 @@ typedef struct { LONG References; SRWLOCK Lock; } EX_RUNDOWN_REF;
 #include "../../common/return_diagnostics.h"
 typedef UCHAR KIRQL;
 typedef struct _TUN_CTX {
-    SRWLOCK TransitionLock; volatile LONG Running; PB_KERNEL_SESSION *V2;
+    SRWLOCK TransitionLock; volatile LONG Running,Halting; PB_KERNEL_SESSION *V2;
     VOID *NblPool,*MiniportAdapterHandle;
+    struct { SRWLOCK RegistrationLock; KEVENT Disconnected; } Device;
     struct {
-        UCHAR LocalMac[6],PeerMac[6]; volatile LONG V2SessionActive; KEVENT RunningEvent;
+        UCHAR LocalMac[6],PeerMac[6]; volatile LONG V2SessionActive,AllowedMask; KEVENT RunningEvent;
+        EX_RUNDOWN_REF ReturnRundown;
         volatile LONG64 RscPackets,RscBytes,RscEvents,RscAborts,UroPackets,UroEvents;
         volatile LONG64 LsoNbls,UsoNbls,ChecksumNbls;
         KSPIN_LOCK ReturnDiagnosticsLock;
@@ -54,6 +56,8 @@ typedef struct NET_BUFFER_LIST { struct NET_BUFFER_LIST *Next; VOID *Reserved[2]
 #define NDIS_STATUS_SUCCESS 0u
 #define TUN_MEMORY_TAG 0u
 #define POOL_FLAG_NON_PAGED 0u
+#define NonPagedPool 0u
+#define ExAllocatePoolZero ExAllocatePool2
 #define IO_NO_INCREMENT 0
 #define MAXULONG 0xffffffffu
 #define HTONS(x) ((USHORT)((((x)&0xffu)<<8)|(((x)>>8)&0xffu)))
@@ -93,8 +97,24 @@ static VOID ExFreePoolWithTag(VOID *p,ULONG tag)
 #endif
 }
 static MDL *IoAllocateMdl(VOID *address,ULONG length,BOOLEAN secondary,BOOLEAN quota,VOID *irp)
-{ (void)secondary; (void)quota; (void)irp; if(Fail()) return NULL; MDL *mdl=calloc(1,sizeof(*mdl)); CHECK(mdl); mdl->Address=address; mdl->Length=length; InterlockedIncrement(&Mdls); return mdl; }
-static VOID IoFreeMdl(MDL *mdl) { CHECK(mdl && Mdls>0); InterlockedDecrement(&Mdls); free(mdl); }
+{
+    (void)secondary; (void)quota; (void)irp; if(Fail()) return NULL;
+#ifdef PB_GUARD_TESTS
+    MDL *mdl=PbTestGuardAlloc(sizeof(*mdl)); memset(mdl,0,sizeof(*mdl));
+#else
+    MDL *mdl=calloc(1,sizeof(*mdl));
+#endif
+    CHECK(mdl); mdl->Address=address; mdl->Length=length; InterlockedIncrement(&Mdls); return mdl;
+}
+static VOID IoFreeMdl(MDL *mdl)
+{
+    CHECK(mdl && Mdls>0); InterlockedDecrement(&Mdls);
+#ifdef PB_GUARD_TESTS
+    PbTestGuardFree(mdl);
+#else
+    free(mdl);
+#endif
+}
 static VOID *MmGetMdlVirtualAddress(MDL *mdl) { return mdl->Address; }
 static VOID MmBuildMdlForNonPagedPool(MDL *mdl) { CHECK(mdl && !mdl->Partial); }
 static VOID IoBuildPartialMdl(MDL *parent,MDL *child,VOID *address,ULONG length)
@@ -107,13 +127,25 @@ static NET_BUFFER_LIST *NdisAllocateNetBufferAndNetBufferList(VOID *pool,ULONG c
 {
     (void)pool; CHECK(!csize && !backfill && !offset && mdl);
     if(Fail()) return NULL;
-    NET_BUFFER_LIST *nbl=calloc(1,sizeof(*nbl)); CHECK(nbl); InterlockedIncrement(&Nbls); nbl->FirstMdl=mdl; nbl->Length=length;
+#ifdef PB_GUARD_TESTS
+    NET_BUFFER_LIST *nbl=PbTestGuardAlloc(sizeof(*nbl)); memset(nbl,0,sizeof(*nbl));
+#else
+    NET_BUFFER_LIST *nbl=calloc(1,sizeof(*nbl));
+#endif
+    CHECK(nbl); InterlockedIncrement(&Nbls); nbl->FirstMdl=mdl; nbl->Length=length;
     nbl->Flags=15; for(ULONG i=0;i<InfoCount;++i) nbl->Info[i]=(VOID *)(ULONG_PTR)~0u;
     if(AfterNblAllocate) AfterNblAllocate();
     return nbl;
 }
 static VOID NdisFreeNetBufferList(NET_BUFFER_LIST *nbl)
-{ CHECK(nbl && Nbls>0); if(BeforeNblFree) BeforeNblFree(nbl); InterlockedDecrement(&Nbls); free(nbl); }
+{
+    CHECK(nbl && Nbls>0); if(BeforeNblFree) BeforeNblFree(nbl); InterlockedDecrement(&Nbls);
+#ifdef PB_GUARD_TESTS
+    PbTestGuardFree(nbl);
+#else
+    free(nbl);
+#endif
+}
 static VOID NdisClearNblFlag(NET_BUFFER_LIST *nbl,ULONG flags) { nbl->Flags&=~flags; }
 static VOID NdisSetNblFlag(NET_BUFFER_LIST *nbl,ULONG flags) { nbl->Flags|=flags; }
 static BOOLEAN ExAcquireRundownProtection(EX_RUNDOWN_REF *refs)

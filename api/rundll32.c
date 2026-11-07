@@ -16,6 +16,7 @@
 #include <assert.h>
 
 #ifdef MAYBE_WOW64
+#include "../include/packetbridge_helper_protocol.h"
 
 _Return_type_success_(return != FALSE)
 static BOOL
@@ -131,7 +132,7 @@ InvokeClassInstaller(_In_ LPCWSTR Action, _In_ LPCWSTR Function, _In_ HDEVINFO D
         return FALSE;
     }
     DWORD LastError;
-    WCHAR Response[8 + 1];
+    WCHAR Response[PB_HELPER_STATUS_RESPONSE_CAPACITY];
     if (!ExecuteRunDll32(Function, Arguments, Response, _countof(Response)))
     {
         LastError = LOG_LAST_ERROR(L"Error executing worker process: %s", Arguments);
@@ -180,7 +181,7 @@ CreateInstanceWin7ViaRundll32(LPWSTR InstanceId)
     LOG(WINTUN_LOG_INFO, L"Spawning native process to create instance");
 
     DWORD LastError;
-    WCHAR Response[MAX_DEVICE_ID_LEN + 1];
+    WCHAR Response[PB_HELPER_CREATE_RESPONSE_CAPACITY];
     if (!ExecuteRunDll32(L"CreateInstanceWin7", L"", Response, _countof(Response)))
     {
         LastError = LOG_LAST_ERROR(L"Error executing worker process");
@@ -195,7 +196,13 @@ CreateInstanceWin7ViaRundll32(LPWSTR InstanceId)
     }
     LastError = wcstoul(Argv[0], NULL, 16);
     if (LastError == ERROR_SUCCESS)
-        wcsncpy_s(InstanceId, MAX_DEVICE_ID_LEN, Argv[1], _TRUNCATE);
+    {
+        SIZE_T Length = wcslen(Argv[1]);
+        if (!Length || Length >= MAX_DEVICE_ID_LEN)
+            LastError = LOG_ERROR(ERROR_INVALID_DATA, L"Invalid instance ID in worker response");
+        else
+            memcpy(InstanceId, Argv[1], (Length + 1) * sizeof(*InstanceId));
+    }
 cleanupArgv:
     LocalFree(Argv);
 cleanup:

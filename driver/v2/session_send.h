@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #pragma once
+#include "platform_nbl.h"
 #define PB_TX_ATTEMPT_BUDGET PB_MAX_BATCH
 /* Send calls can run concurrently/reenter, so storage stays call-local.
  * Growing beyond 64 requires a separate bounded scratch-storage design. */
@@ -107,7 +108,7 @@ static BOOLEAN PbV2Send(TUN_CTX *ctx, NET_BUFFER_LIST *nbls)
         NDIS_STATUS status = retained ? NDIS_STATUS_SUCCESS : NDIS_STATUS_PAUSED;
         NET_BUFFER_LIST_STATUS(nbl) = status;
         if (NET_BUFFER_LIST_INFO(nbl, TcpLargeSendNetBufferListInfo)) InterlockedIncrement64(&ctx->Probe.LsoNbls);
-        if (NET_BUFFER_LIST_INFO(nbl, UdpSegmentationOffloadInfo)) InterlockedIncrement64(&ctx->Probe.UsoNbls);
+        if (PB_NBL_GET(nbl, UdpSegmentationOffloadInfo, 83)) InterlockedIncrement64(&ctx->Probe.UsoNbls);
         if (NET_BUFFER_LIST_INFO(nbl, TcpIpChecksumNetBufferListInfo)) InterlockedIncrement64(&ctx->Probe.ChecksumNbls);
         NET_BUFFER *first = NET_BUFFER_LIST_FIRST_NB(nbl);
         NET_BUFFER *failedNb = first;
@@ -119,6 +120,10 @@ static BOOLEAN PbV2Send(TUN_CTX *ctx, NET_BUFFER_LIST *nbls)
         }
         for (NET_BUFFER *nb = first; nb && status == NDIS_STATUS_SUCCESS; nb = NET_BUFFER_NEXT_NB(nb)) {
             failedNb = nb;
+            /* Classification belongs to this NB; an early failure must not
+             * inherit the preceding NB's queue or Ethernet offset. */
+            failedQueue = PB_SEND_QUEUE_UNKNOWN;
+            failedOffset = 0;
             status = PbV2EnterTxWindow(&w, NET_BUFFER_DATA_LENGTH(nb));
             /* Ending the preceding window may have failed an earlier buffer
              * belonging to this same NBL. Preserve that publication error. */

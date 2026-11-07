@@ -20,7 +20,10 @@ RegistryGetString(LPWSTR *Buf, DWORD Len, DWORD ValueType)
         LPWSTR BufZ = ReZallocArray(*Buf, (SIZE_T)Len + 1, sizeof(*BufZ));
         if (!BufZ)
             return FALSE;
-        _Analysis_assume_((wmemset(BufZ, L'A', (SIZE_T)Len + 1), TRUE));
+        /* The allocation can be larger than the returned registry data. In
+         * that case this reallocation shrinks it, and HEAP_ZERO_MEMORY does
+         * not initialize the existing byte at the new terminator position. */
+        BufZ[Len] = L'\0';
         *Buf = BufZ;
     }
 

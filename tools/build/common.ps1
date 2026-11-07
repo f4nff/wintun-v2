@@ -51,7 +51,10 @@ function Invoke-TestTool {
 }
 
 function Get-SourceFingerprint {
-    $paths = @(git -C $script:RepoRoot ls-files --cached --others --exclude-standard)
+    # Use a concrete string array: PowerShell's object[] overload binding does
+    # not reliably sort native-command output with the requested comparer.
+    # Git quoting must not hide a Unicode path from the subsequent file read.
+    [string[]]$paths = @(git -c core.quotepath=false -C $script:RepoRoot ls-files --full-name --cached --others --exclude-standard)
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate build sources' }
     [Array]::Sort($paths, [StringComparer]::Ordinal)
     $entries = foreach ($path in $paths) {

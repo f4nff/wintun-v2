@@ -99,11 +99,12 @@ static LONG CounterCompare(volatile LONG *p,LONG exchange,LONG compare)
 {if(CounterQueue(p)) {CHECK(!exchange && !compare); InterlockedIncrement(&ReaderRmws);} return InterlockedCompareExchange(p,exchange,compare);}
 static LONG CounterExchange(volatile LONG *p,LONG value)
 {LONG old=InterlockedExchange(p,value); if(CounterQueue(p)) {InterlockedIncrement(&WriterRmws); ObserveUpdate(p,value);} return old;}
-static PB_SESSION *Create(ULONG queues)
+static PB_SESSION *CreateSized(ULONG queues,ULONG slots)
 {
-    PB_CONFIG config={sizeof(config),queues,32,32,0,0}; PB_SESSION *s; VOID *region; PB_LAYOUT layout; uint64_t epoch;
+    PB_CONFIG config={sizeof(config),queues,slots,slots,0,0}; PB_SESSION *s; VOID *region; PB_LAYOUT layout; uint64_t epoch;
     CHECK(PbTestOpen(&config,&s,&region,&layout,&epoch)==PB_OK); Observed=s; return s;
 }
+static PB_SESSION *Create(ULONG queues) {return CreateSized(queues,32);}
 static VOID CloseSession(PB_SESSION *s)
 {
     /* Keep only the test shell until the actual public close callback returns. */
@@ -217,8 +218,64 @@ static VOID FaultRetirement(VOID)
     PbTestActive(s,0); CHECK(Api.PrepareClose(s,2000)==PB_OK && !q->Published && LifecycleUpdates==before+1 && !s->ResourcesClosed);
     CloseSession(s); puts("PASS: damaged completion retains Published until trusted native STOPPED; lifecycle resets it under exclusive DataGate before actual public close.");
 }
+typedef struct RETIRE_JOB {PB_SESSION *S;ULONG Index,Count;BOOL CancelFirst;HANDLE Ready,Start;} RETIRE_JOB;
+static DWORD WINAPI RetireQueue(VOID *opaque)
+{
+    RETIRE_JOB *j=opaque;PB_USER_QUEUE *q=j->S->Queues+j->Index;PB_LEASE incoming[PB_MAX_BATCH],reserved[PB_MAX_BATCH];
+    PB_TOKEN tx[PB_MAX_BATCH],rx[PB_MAX_BATCH];uint32_t n;
+    CHECK(Api.ReceiveBatch(q,incoming,j->Count,&n)==PB_OK&&n==j->Count);
+    CHECK(Api.ReserveBatch(q,reserved,j->Count,&n)==PB_OK&&n==j->Count);
+    for(ULONG i=0;i<n;++i){tx[i]=incoming[i].Descriptor.Token;rx[i]=reserved[i].Descriptor.Token;}
+    CHECK(SetEvent(j->Ready)&&WaitForSingleObject(j->Start,5000)==WAIT_OBJECT_0);
+    if(j->CancelFirst)CHECK(Api.CancelBatch(q,rx,j->Count)==PB_OK);
+    CHECK(Api.ReleaseBatch(q,tx,j->Count,&n)==PB_OK&&n==j->Count);
+    if(!j->CancelFirst)CHECK(Api.CancelBatch(q,rx,j->Count)==PB_OK);
+    CHECK(Api.Wait(q,INFINITE)==PB_STOPPED);return 0;
+}
+static VOID ConcurrentStopRetirement(VOID)
+{
+    const ULONG counts[]={1,2,3,7,8,31,63,64};ULONG scenarios=0;
+    for(ULONG selected=0;selected<8;++selected)for(ULONG order=0;order<2;++order)
+    for(ULONG native=0;native<2;++native)for(ULONG wrap=0;wrap<2;++wrap) {
+        PB_SESSION *s=CreateSized(8,64);if(native)PbTestActive(s,1);
+        uint64_t base=wrap?UINT64_MAX-31:0;
+        for(ULONG i=0;i<8;++i) {
+            for(ULONG r=0;r<PB_QUEUE_COUNT;++r) {
+                PB_QUEUE_VIEW *a=s->Queues[i].Rings+r,*b=s->TestRings[i]+r;
+                a->Cursor=a->PeerCursor=b->Cursor=b->PeerCursor=base;a->Shared->Producer=a->Shared->Consumer=base;
+            }
+            UCHAR bytes[20]={0};for(ULONG packet=0;packet<counts[i];++packet)CHECK(PbTestSend(s,i,bytes,sizeof(bytes),0,0)==PB_OK);
+        }
+        HANDLE start=CreateEventW(NULL,TRUE,FALSE,NULL),last=CreateEventW(NULL,TRUE,FALSE,NULL),threads[8],ready[8];CHECK(start&&last);
+        Paused=CreateEventW(NULL,TRUE,FALSE,NULL);Continue=CreateEventW(NULL,TRUE,FALSE,NULL);CHECK(Paused&&Continue);
+        RETIRE_JOB jobs[8];
+        for(ULONG i=0;i<8;++i) {
+            ready[i]=CreateEventW(NULL,TRUE,FALSE,NULL);CHECK(ready[i]);
+            jobs[i]=(RETIRE_JOB){s,i,counts[i],(BOOL)order,ready[i],i==selected?last:start};
+            threads[i]=CreateThread(NULL,0,RetireQueue,jobs+i,0,NULL);CHECK(threads[i]);
+        }
+        CHECK(WaitForMultipleObjects(8,ready,TRUE,5000)==WAIT_OBJECT_0);
+        PauseCounter=&s->Queues[selected].Loans;CHECK(Life.BeginStop(s)==PB_OK&&SetEvent(start));
+        for(ULONG i=0;i<8;++i)if(i!=selected)CHECK(WaitForSingleObject(threads[i],5000)==WAIT_OBJECT_0);
+        /* A queued exclusive lifecycle reader can block other shared owners.
+         * Complete those owners before pinning the deliberately last one. */
+        CHECK(SetEvent(last)&&WaitForSingleObject(Paused,5000)==WAIT_OBJECT_0);
+        PB_CLOSE_PROGRESS p;CHECK(Life.GetCloseProgress(s,&p)==PB_OK&&!p.UserLeases&&!p.Published);
+        /* The final owner has stored zero but still holds DataGate/Lifetime.
+         * PrepareClose is allowed beside owners; final Close waits until join. */
+        CHECK(Api.PrepareClose(s,0)==PB_QUARANTINED&&p.Phase<PB_LIFE_PREPARED&&!s->ResourcesClosed&&s->Region);
+        CHECK(SetEvent(Continue)&&WaitForMultipleObjects(8,threads,TRUE,5000)==WAIT_OBJECT_0);
+        if(native)CHECK(Api.PrepareClose(s,10)==PB_QUARANTINED&&!s->ResourcesClosed);
+        PbTestActive(s,0);CHECK(Api.PrepareClose(s,2000)==PB_OK&&!s->ResourcesClosed&&s->Region);
+        for(ULONG i=0;i<8;++i)CHECK(CloseHandle(threads[i])&&CloseHandle(ready[i]));
+        CHECK(CloseHandle(start)&&CloseHandle(last)&&CloseHandle(Paused)&&CloseHandle(Continue));Paused=Continue=NULL;
+        CloseSession(s);scenarios++;
+    }
+    CHECK(scenarios==64);
+    puts("PASS: 64 concurrent stop/retirement schedules: eight actual queue owners, batch widths 1/2/3/7/8/31/63/64, both TX-return/RX-cancel orders, every last-owner position, native reference held/released and cursor wrap; zero counters cannot bypass DataGate, owners join before final Close, all guarded allocations reclaimed.");
+}
 int main(VOID)
 {
     setvbuf(stdout,NULL,_IONBF,0); CHECK(PbGetInterfaceV2(2,sizeof(Api),&Api)==PB_OK && PbGetLifecycleInterface(1,sizeof(Life),&Life)==PB_OK);
-    Operations(); Concurrent(); GatedCommit(); FaultRetirement(); return 0;
+    Operations(); Concurrent(); GatedCommit(); FaultRetirement();ConcurrentStopRetirement(); return 0;
 }

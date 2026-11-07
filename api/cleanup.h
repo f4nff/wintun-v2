@@ -4,6 +4,7 @@
  * No shutdown wait is performed under the loader lock. */
 #pragma once
 #include <Windows.h>
+#include "event_pair.h"
 static const BYTE CleanupModuleAnchor = 0;
 static SRWLOCK CleanupLock = SRWLOCK_INIT;
 static HANDLE CleanupIdle, CleanupStop;
@@ -13,14 +14,8 @@ static VOID CleanupRun(VOID);
 static BOOL CleanupInitializeLocked(VOID)
 {
     if (CleanupIdle) return TRUE;
-    HANDLE idle = CreateEventW(NULL, TRUE, TRUE, NULL);
-    HANDLE stop = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (!idle || !stop) {
-        DWORD error = GetLastError();
-        if (idle) CloseHandle(idle);
-        if (stop) CloseHandle(stop);
-        SetLastError(error); return FALSE;
-    }
+    HANDLE idle, stop;
+    if (!CreateManualEventPair(TRUE, &idle, &stop)) return FALSE;
     CleanupIdle = idle; CleanupStop = stop; return TRUE;
 }
 static VOID CALLBACK CleanupCallback(PTP_CALLBACK_INSTANCE instance, PVOID context)

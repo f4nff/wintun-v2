@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #pragma once
+#include "platform_nbl.h"
 #include "session_return.h"
 
 static NET_BUFFER_LIST *PbV2Receive(PB_KERNEL_QUEUE *q, const PB_DESCRIPTOR *d, ULONG count, ULONG copied, const PB_COALESCE *coal)
@@ -21,7 +22,7 @@ static NET_BUFFER_LIST *PbV2Receive(PB_KERNEL_QUEUE *q, const PB_DESCRIPTOR *d, 
     if (length >= 20 && first >> 4 == 4) { flags = NDIS_NBL_FLAGS_IS_IPV4; type = HTONS(NDIS_ETH_TYPE_IPV4); }
     else if (length >= 40 && first >> 4 == 6) { flags = NDIS_NBL_FLAGS_IS_IPV6; type = HTONS(NDIS_ETH_TYPE_IPV6); }
     else return NULL;
-    PB_RX_RECORD *record = ExAllocatePool2(POOL_FLAG_NON_PAGED, FIELD_OFFSET(PB_RX_RECORD, Descriptors) + count * sizeof(*d), TUN_MEMORY_TAG);
+    PB_RX_RECORD *record = ExAllocatePoolZero(NonPagedPool, FIELD_OFFSET(PB_RX_RECORD, Descriptors) + count * sizeof(*d), TUN_MEMORY_TAG);
     if (!record) return NULL;
     VOID *address = copied < 2 ? bytes : (UCHAR *)MmGetMdlVirtualAddress(s->Mdl) + d->DataOffset;
     record->Mdl = IoAllocateMdl(address, length, FALSE, FALSE, NULL);
@@ -52,10 +53,10 @@ static NET_BUFFER_LIST *PbV2Receive(PB_KERNEL_QUEUE *q, const PB_DESCRIPTOR *d, 
     NdisSetNblFlag(nbl, flags);
     NET_BUFFER_LIST_INFO(nbl, NetBufferListFrameType) = (PVOID)(ULONG_PTR)type;
     NET_BUFFER_LIST_STATUS(nbl) = NDIS_STATUS_SUCCESS;
-    NET_BUFFER_LIST_INFO(nbl, TcpRecvSegCoalesceInfo) = NULL;
-    NET_BUFFER_LIST_INFO(nbl, UdpRecvSegCoalesceOffloadInfo) = NULL;
+    PB_NBL_SET(nbl, TcpRecvSegCoalesceInfo, 30, NULL);
+    PB_NBL_SET(nbl, UdpRecvSegCoalesceOffloadInfo, 89, NULL);
     NET_BUFFER_LIST_INFO(nbl, TcpIpChecksumNetBufferListInfo) = NULL;
-    NET_BUFFER_LIST_INFO(nbl, RscTcpTimestampDelta) = NULL;
+    PB_NBL_SET(nbl, RscTcpTimestampDelta, 30, NULL);
     NET_BUFFER_LIST_INFO(nbl, Ieee8021QNetBufferListInfo) = NULL;
     NET_BUFFER_LIST_NEXT_NBL(nbl) = NULL;
     if (coal && count > 1) {
@@ -64,12 +65,12 @@ static NET_BUFFER_LIST *PbV2Receive(PB_KERNEL_QUEUE *q, const PB_DESCRIPTOR *d, 
         checksum.Receive.IpChecksumSucceeded = coal->IpVersion == 4;
         if (coal->Protocol == 6) {
             NDIS_RSC_NBL_INFO info = { 0 }; info.Info.CoalescedSegCount = (USHORT)count;
-            NET_BUFFER_LIST_INFO(nbl, TcpRecvSegCoalesceInfo) = info.Value;
+            PB_NBL_SET(nbl, TcpRecvSegCoalesceInfo, 30, info.Value);
             checksum.Receive.TcpChecksumSucceeded = TRUE;
         } else {
             NDIS_UDP_RSC_OFFLOAD_NET_BUFFER_LIST_INFO info = { 0 };
             info.Receive.SegCount = (USHORT)count; info.Receive.SegSize = (USHORT)coal->SegmentSize;
-            NET_BUFFER_LIST_INFO(nbl, UdpRecvSegCoalesceOffloadInfo) = info.Value;
+            PB_NBL_SET(nbl, UdpRecvSegCoalesceOffloadInfo, 89, info.Value);
             checksum.Receive.UdpChecksumSucceeded = TRUE;
             checksum.Receive.IpChecksumValueInvalid = coal->IpVersion == 4;
         }

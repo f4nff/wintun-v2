@@ -183,7 +183,13 @@ static BOOL WINAPI HostedIo(HANDLE device,DWORD code,VOID *input,DWORD inputSize
 static DWORD WINAPI GatedWait(HANDLE event,DWORD timeout)
 {
     if(event==Progress && timeout==1000) {
+#ifdef PB_CLOSE_RETRY_PARK_ENTER
+        PB_CLOSE_RETRY_PARK_ENTER();
+#endif
         InterlockedIncrement(&Parks);CHECK(SetEvent(ParkEntered) && WaitForSingleObject(ParkGate,5000)==WAIT_OBJECT_0);
+#ifdef PB_CLOSE_RETRY_PARK_RESULT
+        return PB_CLOSE_RETRY_PARK_RESULT(event,timeout);
+#endif
     }
     return WaitForSingleObject(event,timeout);
 }

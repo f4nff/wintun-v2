@@ -13,8 +13,8 @@ BEGIN
    VALUE "FileVersion", PB_VERSION_STRING
    VALUE "ProductVersion", PB_VERSION_STRING
    VALUE "ProductName", "PacketBridgeV2"
-   VALUE "FileDescription", "PacketBridgeV2 batch API"
-   VALUE "OriginalFilename", "packetbridge.dll"
+   VALUE "FileDescription", "PacketBridgeV2 and Wintun compatibility API"
+   VALUE "OriginalFilename", "wintun.dll"
    VALUE "LegalCopyright", "Based on Wintun. Copyright 2018-2026 WireGuard LLC. GPL-2.0."
    VALUE "PrivateBuild", PB_SOURCE_STRING
   END

@@ -14,7 +14,24 @@ $receive=[IO.File]::ReadAllText((Join-Path $script:RepoRoot 'driver\v2\session_n
 $start=$old.IndexOf('typedef struct PB_RETURN_ITEM');$receiveStart=$receive.IndexOf('static NET_BUFFER_LIST *PbV2Receive(')
 if($start -lt 0 -or $receiveStart -lt 0){throw 'Cannot locate preserved return/receive functions'}
 $oldNbl=Join-Path $directory 'nbl-before.h'
-[IO.File]::WriteAllText($oldNbl,$old.Substring($start)+"`n"+$receive.Substring($receiveStart),[Text.UTF8Encoding]::new($false))
+# The extracted receive body still needs the platform macros from its original
+# header preamble. Keep the frozen return and current receive bodies verbatim.
+$platformPath=Join-Path $script:RepoRoot 'driver\v2\platform_nbl.h'
+$platformInclude='#include "'+$platformPath.Replace('\','/')+'"'
+if((Get-FileHash -LiteralPath $oldPath).Hash.ToLowerInvariant() -ne '4525e0e63df6d2c48356bdcf92abdc4b6f91e2d99312131704ba6c6073584802'){throw 'Unexpected frozen return-wake baseline'}
+$oldFragment=Join-Path $directory 'return-before-fragment.h'
+$receiveFragment=Join-Path $directory 'receive-current-fragment.h'
+[IO.File]::WriteAllText($oldFragment,$old.Substring($start),[Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($receiveFragment,$receive.Substring($receiveStart),[Text.UTF8Encoding]::new($false))
+$composed=$platformInclude+"`n"+$old.Substring($start)+"`n"+$receive.Substring($receiveStart)
+[IO.File]::WriteAllText($oldNbl,$composed,[Text.UTF8Encoding]::new($false))
+if([IO.File]::ReadAllText($oldNbl) -cne $composed){throw 'Generated return-wake NBL projection changed'}
+$nblProjection=[ordered]@{path=$oldNbl;sha256=(Get-FileHash -LiteralPath $oldNbl).Hash.ToLowerInvariant();prefix=$platformInclude+"`n";
+    platform_header=@{path=$platformPath;sha256=(Get-FileHash -LiteralPath $platformPath).Hash.ToLowerInvariant()};
+    fragments=@(
+        @{source=$oldPath;source_sha256=(Get-FileHash -LiteralPath $oldPath).Hash.ToLowerInvariant();character_start=$start;character_length=$old.Length-$start;path=$oldFragment;sha256=(Get-FileHash -LiteralPath $oldFragment).Hash.ToLowerInvariant()},
+        @{source=(Join-Path $script:RepoRoot 'driver\v2\session_nbl.h');source_sha256=(Get-FileHash -LiteralPath (Join-Path $script:RepoRoot 'driver\v2\session_nbl.h')).Hash.ToLowerInvariant();character_start=$receiveStart;character_length=$receive.Length-$receiveStart;path=$receiveFragment;sha256=(Get-FileHash -LiteralPath $receiveFragment).Hash.ToLowerInvariant()});
+    method='Absolute actual platform_nbl.h include, then frozen return suffix and current receive suffix with one LF separator; bodies are verbatim UTF-8 text and offsets/lengths are .NET UTF-16 character indices.'}
 Start-TestRecording $directory 'operation-results.json'
 $executables=@()
 foreach($variant in @('before','after')) {
@@ -38,7 +55,7 @@ foreach($variant in @('before','after')) {
 }
 if((Get-SourceFingerprint) -ne $script:SourceFingerprint){throw 'Sources changed during return-wake checks'}
 Write-TestRecording 'passed'
-[ordered]@{source_tree_sha256=$script:SourceFingerprint;baseline_directory=$baseline;
+[ordered]@{source_tree_sha256=$script:SourceFingerprint;version=$script:Version;baseline_directory=$baseline;nbl_projection=$nblProjection;
     baseline_return_sha256=(Get-FileHash -LiteralPath $oldPath).Hash.ToLowerInvariant();
     current_return_sha256=(Get-FileHash 'driver\v2\session_return.h').Hash.ToLowerInvariant();
     method='Frozen/current actual return functions, same NBL construction, completion/reference/core and actual worker/query. Count KernelEvent writes and idle receive scans. Real host threads/events cover normal/paused idle, full credit, before-wait notification, normal drain, full completion backpressure and two concurrent return chains. Ordinary/guarded runs verify exact tokens/statistics, real native ownership and balanced resources. Not kernel CPU/latency/throughput.';

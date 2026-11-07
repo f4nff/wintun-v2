@@ -22,7 +22,7 @@ foreach ($name in @('packetbridge.sys', 'packetbridge.inf', 'packetbridge.cat', 
         throw "Driver artifact changed since build: $name"
     }
 }
-foreach ($name in @('pbprobe.exe','packetbridge.dll')) {
+foreach ($name in @('pbprobe.exe','wintun.dll')) {
     $entry = @($toolManifest.files | Where-Object name -eq $name)
     if ($entry.Count -ne 1 -or (Get-FileHash -LiteralPath "$buildPath\$name" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry[0].sha256) {
         throw "Development binary changed since build: $name"
@@ -37,7 +37,7 @@ $zipPath = "$bundlePath.zip"
 if ((Test-Path -LiteralPath $bundlePath) -or (Test-Path -LiteralPath $zipPath)) { throw 'Signing bundle already exists. Preserve the frozen signing inputs.' }
 New-Item -ItemType Directory -Path $bundlePath | Out-Null
 Copy-Item -LiteralPath "$driverPath\packetbridge.sys", "$driverPath\packetbridge.inf", "$driverPath\packetbridge.cat", "$driverPath\packetbridge.pdb" -Destination $bundlePath
-Copy-Item -LiteralPath "$buildPath\pbprobe.exe", "$buildPath\packetbridge.dll", "$buildPath\test-results.json", "$script:RepoRoot\COPYING", "$script:RepoRoot\docs\offload-capability-probe.md" -Destination $bundlePath
+Copy-Item -LiteralPath "$buildPath\pbprobe.exe", "$buildPath\wintun.dll", "$buildPath\test-results.json", "$script:RepoRoot\COPYING", "$script:RepoRoot\docs\offload-capability-probe.md" -Destination $bundlePath
 Copy-Item -LiteralPath "$PSScriptRoot\verify-signed-driver.ps1", "$PSScriptRoot\catalog-hash.ps1", "$PSScriptRoot\verify-embedded-driver.ps1" -Destination $bundlePath
 Copy-Item -LiteralPath "$driverPath\manifest.json" -Destination "$bundlePath\build-manifest.json"
 $files = @(Get-ChildItem -LiteralPath $bundlePath -File | Sort-Object Name | ForEach-Object {

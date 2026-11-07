@@ -10,6 +10,10 @@
 #include <Windows.h>
 #include <devioctl.h>
 #include <stdlib.h>
+#include "v2/compat.h"
+#include "v2/lifecycle.h"
+#include <wchar.h>
+#include "termination_wait.h"
 
 #pragma warning(disable : 4200) /* nonstandard: zero-sized array in struct/union */
 
@@ -67,97 +71,84 @@ typedef struct _TUN_SESSION
         CRITICAL_SECTION Lock;
     } Send;
     TUN_REGISTER_RINGS Descriptor;
-    HANDLE Handle;
+    HANDLE Thread, Wake, Ready;
+    HMODULE Module;
+    WCHAR *Path;
+    PB_INTERFACE_V2 Api;
+    PB_LIFECYCLE_INTERFACE Life;
+    PB_SESSION *Native;
+    volatile LONG Stopping;
+    DWORD StartError;
+    SIZE_T RingBytes;
+    BOOL RingCharged;
 } TUN_SESSION;
+
+#include "compat_worker.h"
 
 WINTUN_START_SESSION_FUNC WintunStartSession;
 _Use_decl_annotations_
 TUN_SESSION *WINAPI
 WintunStartSession(WINTUN_ADAPTER *Adapter, DWORD Capacity)
 {
-    DWORD LastError;
-    TUN_SESSION *Session = Zalloc(sizeof(TUN_SESSION));
-    if (!Session)
-    {
-        LastError = GetLastError();
-        goto cleanup;
-    }
-    const ULONG RingSize = TUN_RING_SIZE(Capacity);
-    BYTE *AllocatedRegion = VirtualAlloc(0, (size_t)RingSize * 2, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!AllocatedRegion)
-    {
-        LastError = LOG_LAST_ERROR(L"Failed to allocate ring memory (requested size: 0x%zx)", (size_t)RingSize * 2);
-        goto cleanupRings;
-    }
-    Session->Descriptor.Send.RingSize = RingSize;
-    Session->Descriptor.Send.Ring = (TUN_RING *)AllocatedRegion;
-    Session->Descriptor.Send.TailMoved = CreateEventW(&SecurityAttributes, FALSE, FALSE, NULL);
-    if (!Session->Descriptor.Send.TailMoved)
-    {
-        LastError = LOG_LAST_ERROR(L"Failed to create send event");
-        goto cleanupAllocatedRegion;
-    }
-
-    Session->Descriptor.Receive.RingSize = RingSize;
-    Session->Descriptor.Receive.Ring = (TUN_RING *)(AllocatedRegion + RingSize);
-    Session->Descriptor.Receive.TailMoved = CreateEventW(&SecurityAttributes, FALSE, FALSE, NULL);
-    if (!Session->Descriptor.Receive.TailMoved)
-    {
-        LastError = LOG_LAST_ERROR(L"Failed to create receive event");
-        goto cleanupSendTailMoved;
-    }
-
-    Session->Handle = AdapterOpenDeviceObject(Adapter);
-    if (Session->Handle == INVALID_HANDLE_VALUE)
-    {
-        LastError = LOG(WINTUN_LOG_ERR, L"Failed to open adapter device object");
-        goto cleanupReceiveTailMoved;
-    }
-    DWORD BytesReturned;
-    if (!DeviceIoControl(
-            Session->Handle,
-            TUN_IOCTL_REGISTER_RINGS,
-            &Session->Descriptor,
-            sizeof(TUN_REGISTER_RINGS),
-            NULL,
-            0,
-            &BytesReturned,
-            NULL))
-    {
-        LastError = LOG_LAST_ERROR(L"Failed to register rings");
-        goto cleanupHandle;
-    }
+    if (!Adapter || Capacity < WINTUN_MIN_RING_CAPACITY || Capacity > WINTUN_MAX_RING_CAPACITY ||
+        (Capacity & (Capacity - 1))) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
+    if (!MainRuntimeAcquire()) return NULL;
+    DWORD LastError = ERROR_NOT_ENOUGH_MEMORY;
+    TUN_SESSION *Session = Zalloc(sizeof(*Session));
+    if (!Session) { DWORD error = GetLastError(); MainRuntimeRelease(); SetLastError(error); return NULL; }
     Session->Capacity = Capacity;
-    (VOID) InitializeCriticalSectionAndSpinCount(&Session->Receive.Lock, LOCK_SPIN_COUNT);
-    (VOID) InitializeCriticalSectionAndSpinCount(&Session->Send.Lock, LOCK_SPIN_COUNT);
+    Session->RingBytes = (SIZE_T)TUN_RING_SIZE(Capacity) * 2;
+    if (!CompatReserveBytes(Session->RingBytes)) goto cleanup;
+    Session->RingCharged = TRUE;
+    Session->Path = _wcsdup(Adapter->InterfaceFilename);
+    if (!Session->Path) goto cleanup;
+    BYTE *region = VirtualAlloc(NULL, Session->RingBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!region) { LastError = GetLastError(); goto cleanup; }
+    Session->Descriptor.Send.Ring = (TUN_RING *)region;
+    Session->Descriptor.Receive.Ring = (TUN_RING *)(region + TUN_RING_SIZE(Capacity));
+    Session->Descriptor.Send.TailMoved = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!Session->Descriptor.Send.TailMoved) { LastError = GetLastError(); goto cleanup; }
+    Session->Wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!Session->Wake) { LastError = GetLastError(); goto cleanup; }
+    Session->Ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!Session->Ready) { LastError = GetLastError(); goto cleanup; }
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)WintunStartSession, &Session->Module)) {
+        LastError = GetLastError(); goto cleanup;
+    }
+    if (PbGetInterfaceV2(PB_INTERFACE_V2_MAJOR, sizeof(Session->Api), &Session->Api) != PB_OK ||
+        PbGetLifecycleInterface(PB_LIFECYCLE_ABI, sizeof(Session->Life), &Session->Life) != PB_OK) {
+        LastError = ERROR_REVISION_MISMATCH; goto cleanup;
+    }
+    InitializeCriticalSection(&Session->Receive.Lock);
+    InitializeCriticalSection(&Session->Send.Lock);
+    Session->Thread = CreateThread(NULL, 0, CompatWorker, Session, 0, NULL);
+    if (!Session->Thread) {
+        LastError = GetLastError();
+        DeleteCriticalSection(&Session->Receive.Lock); DeleteCriticalSection(&Session->Send.Lock); goto cleanup;
+    }
+    if (WaitForSingleObject(Session->Ready, INFINITE) != WAIT_OBJECT_0 || Session->StartError) {
+        LastError = Session->StartError ? Session->StartError : GetLastError();
+        InterlockedExchange(&Session->Stopping, 1); SetEvent(Session->Wake);
+        (void)WaitForOwnedTermination(Session->Thread); CloseHandle(Session->Thread);
+        DeleteCriticalSection(&Session->Receive.Lock); DeleteCriticalSection(&Session->Send.Lock); goto cleanup;
+    }
+    CloseHandle(Session->Ready); Session->Ready = NULL;
     return Session;
-cleanupHandle:
-    CloseHandle(Session->Handle);
-cleanupReceiveTailMoved:
-    CloseHandle(Session->Descriptor.Receive.TailMoved);
-cleanupSendTailMoved:
-    CloseHandle(Session->Descriptor.Send.TailMoved);
-cleanupAllocatedRegion:
-    VirtualFree(AllocatedRegion, 0, MEM_RELEASE);
-cleanupRings:
-    Free(Session);
 cleanup:
-    SetLastError(LastError);
-    return NULL;
+    CompatFree(Session); SetLastError(LastError); return NULL;
 }
 
 WINTUN_END_SESSION_FUNC WintunEndSession;
 _Use_decl_annotations_
-VOID WINAPI
-WintunEndSession(TUN_SESSION *Session)
+VOID WINAPI WintunEndSession(TUN_SESSION *Session)
 {
-    DeleteCriticalSection(&Session->Send.Lock);
-    DeleteCriticalSection(&Session->Receive.Lock);
-    CloseHandle(Session->Handle);
-    CloseHandle(Session->Descriptor.Send.TailMoved);
-    CloseHandle(Session->Descriptor.Receive.TailMoved);
-    VirtualFree(Session->Descriptor.Send.Ring, 0, MEM_RELEASE);
-    Free(Session);
+    if (!Session) return;
+    InterlockedExchange(&Session->Stopping, 1); SetEvent(Session->Wake);
+    /* Old API requires callers to have stopped/joined packet users first.
+     * Never free rings while the queue owner can still touch them. */
+    (void)WaitForOwnedTermination(Session->Thread); CloseHandle(Session->Thread);
+    DeleteCriticalSection(&Session->Send.Lock); DeleteCriticalSection(&Session->Receive.Lock);
+    CompatFree(Session);
 }
 
 WINTUN_GET_READ_WAIT_EVENT_FUNC WintunGetReadWaitEvent;
@@ -165,6 +156,7 @@ _Use_decl_annotations_
 HANDLE WINAPI
 WintunGetReadWaitEvent(TUN_SESSION *Session)
 {
+    if (!Session) { SetLastError(ERROR_INVALID_HANDLE); return NULL; }
     return Session->Descriptor.Send.TailMoved;
 }
 
@@ -174,6 +166,7 @@ BYTE *WINAPI
 WintunReceivePacket(TUN_SESSION *Session, DWORD *PacketSize)
 {
     DWORD LastError;
+    if (!Session || !PacketSize) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
     EnterCriticalSection(&Session->Send.Lock);
     if (Session->Send.Head >= Session->Capacity)
     {
@@ -226,8 +219,13 @@ _Use_decl_annotations_
 VOID WINAPI
 WintunReleaseReceivePacket(TUN_SESSION *Session, const BYTE *Packet)
 {
+    if (!Session) { SetLastError(ERROR_INVALID_HANDLE); return; }
     EnterCriticalSection(&Session->Send.Lock);
-    TUN_PACKET *ReleasedBuffPacket = (TUN_PACKET *)(Packet - offsetof(TUN_PACKET, Data));
+    TUN_PACKET *ReleasedBuffPacket = CompatIssuedPacket(Session, Session->Descriptor.Send.Ring, Packet,
+        Session->Send.HeadRelease, Session->Send.Head);
+    if (!ReleasedBuffPacket || (ReleasedBuffPacket->Size & TUN_PACKET_RELEASE)) {
+        LeaveCriticalSection(&Session->Send.Lock); SetLastError(ERROR_INVALID_PARAMETER); return;
+    }
     ReleasedBuffPacket->Size |= TUN_PACKET_RELEASE;
     while (Session->Send.PacketsToRelease)
     {
@@ -238,7 +236,10 @@ WintunReleaseReceivePacket(TUN_SESSION *Session, const BYTE *Packet)
         Session->Send.HeadRelease = TUN_RING_WRAP(Session->Send.HeadRelease + AlignedPacketSize, Session->Capacity);
         Session->Send.PacketsToRelease--;
     }
-    WriteULongRelease(&Session->Descriptor.Send.Ring->Head, Session->Send.HeadRelease);
+    if (Session->Descriptor.Send.Ring->Head != Session->Send.HeadRelease) {
+        WriteULongRelease(&Session->Descriptor.Send.Ring->Head, Session->Send.HeadRelease);
+        SetEvent(Session->Wake);
+    }
     LeaveCriticalSection(&Session->Send.Lock);
 }
 
@@ -248,6 +249,7 @@ BYTE *WINAPI
 WintunAllocateSendPacket(TUN_SESSION *Session, DWORD PacketSize)
 {
     DWORD LastError;
+    if (!Session || PacketSize > WINTUN_MAX_IP_PACKET_SIZE) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
     EnterCriticalSection(&Session->Receive.Lock);
     if (Session->Receive.Tail >= Session->Capacity)
     {
@@ -285,8 +287,13 @@ _Use_decl_annotations_
 VOID WINAPI
 WintunSendPacket(TUN_SESSION *Session, const BYTE *Packet)
 {
+    if (!Session) { SetLastError(ERROR_INVALID_HANDLE); return; }
     EnterCriticalSection(&Session->Receive.Lock);
-    TUN_PACKET *ReleasedBuffPacket = (TUN_PACKET *)(Packet - offsetof(TUN_PACKET, Data));
+    TUN_PACKET *ReleasedBuffPacket = CompatIssuedPacket(Session, Session->Descriptor.Receive.Ring, Packet,
+        Session->Receive.TailRelease, Session->Receive.Tail);
+    if (!ReleasedBuffPacket || !(ReleasedBuffPacket->Size & TUN_PACKET_RELEASE)) {
+        LeaveCriticalSection(&Session->Receive.Lock); SetLastError(ERROR_INVALID_PARAMETER); return;
+    }
     ReleasedBuffPacket->Size &= ~TUN_PACKET_RELEASE;
     while (Session->Receive.PacketsToRelease)
     {
@@ -303,8 +310,7 @@ WintunSendPacket(TUN_SESSION *Session, const BYTE *Packet)
     {
         WriteULongRelease(&Session->Descriptor.Receive.Ring->Tail, Session->Receive.TailRelease);
         MemoryBarrier();
-        if (ReadAcquire(&Session->Descriptor.Receive.Ring->Alertable))
-            SetEvent(Session->Descriptor.Receive.TailMoved);
+        SetEvent(Session->Wake);
     }
     LeaveCriticalSection(&Session->Receive.Lock);
 }

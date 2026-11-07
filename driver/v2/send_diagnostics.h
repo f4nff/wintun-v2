@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #pragma once
+#include "platform_nbl.h"
 #include "send_pressure.h"
 /* Exception-only snapshot before LSO completion mutates OOB and before NBL
  * ownership is returned. No MDL/payload reads, allocation, clock or upcall. */
@@ -10,7 +11,7 @@ static __declspec(noinline) VOID PbV2RejectSend(TUN_CTX *ctx, uint64_t epoch, NE
     PB_SEND_EVENT event = { 0 };
     event.Epoch = epoch; event.NdisStatus = (uint32_t)status; event.PriorNdisStatus = prior;
     event.LsoInfo = (ULONG_PTR)NET_BUFFER_LIST_INFO(nbl, TcpLargeSendNetBufferListInfo);
-    event.UsoInfo = (ULONG_PTR)NET_BUFFER_LIST_INFO(nbl, UdpSegmentationOffloadInfo);
+    event.UsoInfo = (ULONG_PTR)PB_NBL_GET(nbl, UdpSegmentationOffloadInfo, 83);
     event.ChecksumInfo = (ULONG_PTR)NET_BUFFER_LIST_INFO(nbl, TcpIpChecksumNetBufferListInfo);
     event.Reason = failure->Reason; event.Queue = queue;
     event.NetBufferLength = nb ? NET_BUFFER_DATA_LENGTH(nb) : 0; event.EthernetLength = ethernet;

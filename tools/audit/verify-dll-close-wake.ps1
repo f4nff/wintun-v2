@@ -1,7 +1,9 @@
-param([string]$BaselineDirectory='out\dll-close-wake-baseline\ba18cd057953')
+param([string]$BaselineDirectory='out\dll-close-wake-baseline\ba18cd057953',
+    [string]$PolicyBaselineDirectory='out\packet-edge-baseline\6fb17007a923')
 # Frozen/current actual queue completion, same lifecycle/core and real events.
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '..\build\common.ps1')
+. (Join-Path $PSScriptRoot 'lso-checksum-ledger.ps1')
 trap {if($script:TestResultFile) {Write-TestRecording 'failed'};throw}
 Initialize-BuildEnvironment
 $script:SourceFingerprint=Get-SourceFingerprint
@@ -13,6 +15,13 @@ foreach($entry in @(
     @('api\v2\session_state.h','f57bd5791fa3bf2ed616fde34576d8853f3bbd88c0a8ba15ee24a5876f4c2abc'))) {
     if((Get-FileHash -LiteralPath (Join-Path $baseline $entry[0])).Hash.ToLowerInvariant() -ne $entry[1]) {throw "Unexpected close-wake baseline: $($entry[0])"}
 }
+# The historical queue snapshot is selective and has no policy source.
+# Bind that additional dependency to the complete accepted pre-repair snapshot.
+$policyBaseline=(Resolve-Path -LiteralPath $PolicyBaselineDirectory).Path
+$policyManifest=Get-Content -LiteralPath (Join-Path $policyBaseline 'baseline.json') -Raw|ConvertFrom-Json
+if($policyManifest.status -cne 'accepted' -or $policyManifest.source_tree_sha256 -cne '6fb17007a9234543f89dea26d3c705639e73b01c2fd2762943862149368a4826' -or
+    $policyManifest.files.'common/offload_policy.c' -cne 'a3a61042c8dc48ea02af9201fccf57c1da88a3cc52abf5de7c7fc56ffbd39374'){throw 'Unexpected complete policy baseline'}
+Assert-LsoChecksumDependency -BaselineDirectory $policyBaseline -Relative 'common/offload_policy.c'
 $directory=Join-Path $script:RepoRoot "out\dll-close-wake\$($script:SourceFingerprint.Substring(0,12))"
 New-Item -ItemType Directory -Path $directory -Force|Out-Null
 $oldSession=Join-Path $directory 'session-before.c'
@@ -50,7 +59,11 @@ Write-TestRecording 'passed'
 [ordered]@{version=$script:Version;source_tree_sha256=$script:SourceFingerprint;baseline_directory=$baseline;
     baseline_queue_sha256=(Get-FileHash -LiteralPath (Join-Path $baseline 'api\v2\session_queue.h')).Hash.ToLowerInvariant();
     current_queue_sha256=(Get-FileHash 'api\v2\session_queue.h').Hash.ToLowerInvariant();
-    method='Frozen/current actual queue, same current lifecycle/core and actual SYS NBL/return/flush/drain/query helpers with hosted DDI. ISO/MS ordinary/guarded; real Windows event and wait operations. 600 non-progress calls produce 600 versus 0 ProgressEvent calls; seventeen corrupt polls produce 18 versus 1 ProgressEvent calls, while every successful invalid-token Pop now notifies KernelEvent for released space. Actual native QUERY is routed into DLL StatusInternal (TestActive acknowledgement bypass disabled) for the cross-layer case: raw invalid-epoch submissions fill completions, actual NBL return leaves pending/credit=1 after acknowledged DRAIN and native refs=0. Old producer stalls until explicit recovery wake; current producer flushes and native STOPPED authorizes local retirement without manual wake. Native-only terminal with a noncooperating full recycle ring reproduces an old user-loan stall; current stopped-admission fallback locally retires that view without publishing a recycle or freeing the native slot, and native acknowledgement still blocks close. Running PB_FULL backpressure is unchanged. Genuine returns, packet rejection status 4, first fault, and first Wait terminal hint retain their progress notifications. Controlled asynchronous retry snapshots justify waiting for a completed failed snapshot, with retained resources checked throughout. Actual API/lifecycle regressions retain Wait cancellation, failure retries and barriers. Shell pin only joins public-close callbacks for deterministic guarded allocation/admission teardown. Not kernel CPU/latency/throughput.';
+    production_changed=$true;
+    lso_checksum_ledger=@{path='tools/audit/lso-checksum-ledger.ps1';sha256=(Get-FileHash (Join-Path $PSScriptRoot 'lso-checksum-ledger.ps1')).Hash.ToLowerInvariant()};
+    reviewed_production_repairs=@('common/offload_policy.c');
+    common_policy_baseline=$policyBaseline;common_policy_baseline_source_tree_sha256=$policyManifest.source_tree_sha256;
+    method='Frozen/current actual queue, same current lifecycle/core and actual SYS NBL/return/flush/drain/query helpers with hosted DDI. ISO/MS ordinary/guarded; real Windows event and wait operations. 600 non-progress calls produce 600 versus 0 ProgressEvent calls; seventeen corrupt polls produce 18 versus 1 ProgressEvent calls, while every successful invalid-token Pop now notifies KernelEvent for released space. Actual native QUERY is routed into DLL StatusInternal (TestActive acknowledgement bypass disabled) for the cross-layer case: raw invalid-epoch submissions fill completions, actual NBL return leaves pending/credit=1 after acknowledged DRAIN and native refs=0. Old producer stalls until explicit recovery wake; current producer flushes and native STOPPED authorizes local retirement without manual wake. Native-only terminal with a noncooperating full recycle ring reproduces an old user-loan stall; current stopped-admission fallback locally retires that view without publishing a recycle or freeing the native slot, and native acknowledgement still blocks close. Running PB_FULL backpressure is unchanged. Genuine returns, packet rejection status 4, first fault, and first Wait terminal hint retain their progress notifications. Controlled asynchronous retry snapshots justify waiting for a completed failed snapshot, with retained resources checked throughout. Actual API/lifecycle regressions retain Wait cancellation, failure retries and barriers. Shell pin only joins public-close callbacks for deterministic guarded allocation/admission teardown. Not kernel CPU/latency/throughput. Historical policy dependency replay admits only the separately reviewed complete-file LSO/checksum configuration repair; all other source bindings and test paths retain their existing contracts.';
     stopped_release_boundary_review='Both queue variants also run eight normal/native-terminal x full/partial recycle x ordinary/wrapped cursor scenarios. Each scenario checks nine guarded invalid token batches for byte-exact pool/ring rollback, a joined real wrong-thread release, actual accepted-prefix publication, full-ring local-view retirement (old expected stall plus explicit teardown recovery), repeated-return rejection, and actual SYS recycling of only the published prefix with exact free-index/full-pool-cache checks. A separately held hosted native acknowledgement prevents physical close. The matrix adds no production flags, protocol hooks or shortened waits.';
     kernel_runtime_tested=$false;operation_record=$script:TestResultFile;executables=$executables}|
     ConvertTo-Json -Depth 7|Set-Content -LiteralPath (Join-Path $directory 'evidence.json') -Encoding utf8

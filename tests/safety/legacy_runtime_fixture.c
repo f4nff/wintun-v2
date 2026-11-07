@@ -8,7 +8,10 @@
 #include <stdint.h>
 static HANDLE Detached;
 #define DllMain ProductionDllMain
-#include "../../api/main.c"
+#ifndef PB_LEGACY_RUNTIME_MAIN_SOURCE
+#define PB_LEGACY_RUNTIME_MAIN_SOURCE "../../api/main.c"
+#endif
+#include PB_LEGACY_RUNTIME_MAIN_SOURCE
 #undef DllMain
 VOID AdapterCleanupDetach(VOID) {}
 VOID NamespaceInit(VOID) {}
@@ -34,9 +37,15 @@ static VOID *TestReZalloc(VOID *memory, SIZE_T bytes)
     return allocation;
 }
 static VOID TestFree(VOID *allocation) { if (allocation) { assert(OwnedAllocations > 0); InterlockedDecrement(&OwnedAllocations); } Free(allocation); }
-static BOOL WINAPI TestClose(HANDLE handle) { assert(OwnedHandles > 0); InterlockedDecrement(&OwnedHandles); return CloseHandle(handle); }
+#ifndef PB_FIXTURE_CLOSE_OBSERVER
+#define PB_FIXTURE_CLOSE_OBSERVER(handle) ((void)(handle))
+#endif
+static BOOL WINAPI TestClose(HANDLE handle) { PB_FIXTURE_CLOSE_OBSERVER(handle); assert(OwnedHandles > 0); InterlockedDecrement(&OwnedHandles); return CloseHandle(handle); }
+#ifndef PB_FIXTURE_EVENT_RESULT
+#define PB_FIXTURE_EVENT_RESULT(handle) (handle)
+#endif
 static HANDLE WINAPI TestEvent(LPSECURITY_ATTRIBUTES security, BOOL manual, BOOL initial, LPCWSTR name)
-{ return Failure() ? NULL : TrackHandle(CreateEventW(security, manual, initial, name)); }
+{ return PB_FIXTURE_EVENT_RESULT(Failure() ? NULL : TrackHandle(CreateEventW(security, manual, initial, name))); }
 static BOOL WINAPI TestModule(DWORD flags, LPCWSTR address, HMODULE *module)
 { return Failure() ? FALSE : GetModuleHandleExW(flags, address, module); }
 static PTP_WORK WINAPI TestWork(PTP_WORK_CALLBACK callback, PVOID context, PTP_CALLBACK_ENVIRON environment)
@@ -88,7 +97,10 @@ static BOOL WINAPI TestProcess(LPCWSTR application, LPWSTR command, LPSECURITY_A
 #define UpdateProcThreadAttribute TestUpdateAttributes
 #define CreateProcessW TestProcess
 #define RUN_DLL32_TIMEOUT 2000u
-#include "../../api/rundll32.c"
+#ifndef PB_LEGACY_HELPER_SOURCE
+#define PB_LEGACY_HELPER_SOURCE "../../api/rundll32.c"
+#endif
+#include PB_LEGACY_HELPER_SOURCE
 #undef Alloc
 #undef Zalloc
 #undef AllocArray

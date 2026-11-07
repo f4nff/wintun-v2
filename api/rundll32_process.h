@@ -3,6 +3,10 @@
  * reads, output buffers, temporary package and loader/dependency references.
  * The public waiter owns only a reference, never a worker's stack or I/O buffer. */
 #pragma once
+#include "../include/packetbridge_helper_protocol.h"
+#include "termination_wait.h"
+#include "overlapped_wait.h"
+#include "event_pair.h"
 #ifndef RUN_DLL32_MAX_JOBS
 #define RUN_DLL32_MAX_JOBS 4u
 #endif
@@ -26,7 +30,7 @@ typedef struct _HELPER_JOB {
     HELPER_STREAM Streams[2];
     WCHAR *Function, *Arguments, *CommandLine;
     WCHAR Directory[MAX_PATH], DllPath[MAX_PATH];
-    WCHAR Response[MAX_DEVICE_ID_LEN + 1];
+    WCHAR Response[PB_HELPER_CREATE_RESPONSE_CAPACITY];
     DWORD ResponseCapacity, ResponseBytes, Error;
     struct _HELPER_JOB *Next;
 } HELPER_JOB;
@@ -58,10 +62,9 @@ static BOOL HelperReserve(VOID)
     else if (HelperCount >= RUN_DLL32_MAX_JOBS) error = ERROR_BUSY;
     else {
         if (!HelperIdle) {
-            HANDLE idle = CreateEventW(NULL, TRUE, TRUE, NULL), stop = CreateEventW(NULL, TRUE, FALSE, NULL);
-            if (!idle || !stop) {
-                error = GetLastError(); HelperClose(&idle); HelperClose(&stop);
-            } else { HelperIdle = idle; HelperStop = stop; }
+            HANDLE idle, stop;
+            if (!CreateManualEventPair(TRUE, &idle, &stop)) error = GetLastError();
+            else { HelperIdle = idle; HelperStop = stop; }
         }
         if (!error) { ++HelperCount; ResetEvent(HelperIdle); }
     }
@@ -175,8 +178,13 @@ static VOID HelperPump(HELPER_JOB *Job, HELPER_STREAM *Stream)
     if (Stream->Closed) return;
     DWORD count = 0;
     if (Stream->Pending) {
-        BOOL okay = GetOverlappedResult(Stream->Read, &Stream->Io, &count, FALSE);
+        DWORD resetError;
+        BOOL okay = PollOwnedIo(Stream->Read, &Stream->Io, &count, &resetError);
         DWORD error = okay ? ERROR_SUCCESS : GetLastError();
+        if (resetError) {
+            HelperError(Job, resetError);
+            Sleep(1000); return; /* Keep the live read and avoid a broken-event spin. */
+        }
         if (!okay && error == ERROR_IO_INCOMPLETE) return;
         Stream->Pending = FALSE; HelperReadResult(Job, Stream, okay, count, error);
         return;
@@ -191,14 +199,22 @@ static VOID HelperPump(HELPER_JOB *Job, HELPER_STREAM *Stream)
         if (!Stream->Closed) SetEvent(Stream->Io.hEvent);
     }
 }
+static BOOL HelperAwaitIo(HELPER_JOB *Job, HELPER_STREAM *Stream, DWORD *Count)
+{
+    DWORD waitError;
+    BOOL okay = WaitForOwnedIo(Stream->Read, &Stream->Io, Count, &waitError);
+    DWORD error = okay ? ERROR_SUCCESS : GetLastError();
+    Stream->Pending = FALSE; /* Only the terminal query retires this owner. */
+    if (waitError) HelperError(Job, waitError);
+    SetLastError(error); return okay;
+}
 static VOID HelperFinishStream(HELPER_JOB *Job, HELPER_STREAM *Stream, BOOL Drain)
 {
     DWORD count = 0;
     if (Stream->Pending) {
         CancelIoEx(Stream->Read, &Stream->Io);
-        BOOL okay = GetOverlappedResult(Stream->Read, &Stream->Io, &count, TRUE);
+        BOOL okay = HelperAwaitIo(Job, Stream, &count);
         DWORD error = okay ? ERROR_SUCCESS : GetLastError();
-        Stream->Pending = FALSE;
         if (Drain) HelperReadResult(Job, Stream, okay, count, error);
     }
     /* Own-process completion is the boundary, not EOF from every inherited copy.
@@ -206,12 +222,21 @@ static VOID HelperFinishStream(HELPER_JOB *Job, HELPER_STREAM *Stream, BOOL Drai
      * duplicate writer. Each post-exit drain has an explicit byte/turn budget. */
     if (Drain) for (DWORD turn = 0; turn <= RUN_DLL32_OUTPUT_LIMIT / sizeof(Stream->Bytes); ++turn) {
         DWORD available = 0;
-        if (!PeekNamedPipe(Stream->Read, NULL, 0, NULL, &available, NULL) || !available) break;
+        if (!PeekNamedPipe(Stream->Read, NULL, 0, NULL, &available, NULL)) {
+            DWORD error = GetLastError();
+            HelperReadResult(Job, Stream, FALSE, 0, error); break;
+        }
+        if (!available) break;
         ResetEvent(Stream->Io.hEvent);
         BOOL okay = ReadFile(Stream->Read, Stream->Bytes, min(available, sizeof(Stream->Bytes)), &count, &Stream->Io);
-        if (!okay && GetLastError() == ERROR_IO_PENDING) okay = GetOverlappedResult(Stream->Read, &Stream->Io, &count, TRUE);
+        DWORD error = okay ? ERROR_SUCCESS : GetLastError();
+        if (!okay && error == ERROR_IO_PENDING) {
+            Stream->Pending = TRUE;
+            okay = HelperAwaitIo(Job, Stream, &count);
+            error = okay ? ERROR_SUCCESS : GetLastError();
+        }
+        HelperReadResult(Job, Stream, okay, count, error);
         if (!okay || !count) break;
-        HelperConsume(Job, Stream, count);
         if (turn == RUN_DLL32_OUTPUT_LIMIT / sizeof(Stream->Bytes)) HelperError(Job, ERROR_BUFFER_OVERFLOW);
     }
     if (Drain && Stream == &Job->Streams[1]) {
@@ -242,16 +267,19 @@ static BOOL HelperPipe(HELPER_JOB *Job, DWORD Index)
     if (stream->Write == INVALID_HANDLE_VALUE) return FALSE;
     if (stream->Pending) {
         DWORD count;
-        if (!GetOverlappedResult(stream->Read, &stream->Io, &count, TRUE)) return FALSE;
-        stream->Pending = FALSE;
+        if (!HelperAwaitIo(Job, stream, &count)) return FALSE;
     }
     ResetEvent(stream->Io.hEvent); return TRUE;
 }
 static BOOL HelperStart(HELPER_JOB *Job)
 {
     WCHAR windows[MAX_PATH], executable[MAX_PATH];
-    if (!GetWindowsDirectoryW(windows, _countof(windows)) ||
-        !PathCombineW(executable, windows, L"Sysnative\\rundll32.exe") ||
+    UINT windowsLength = GetWindowsDirectoryW(windows, _countof(windows));
+    if (!windowsLength) return FALSE;
+    /* An insufficient-buffer result is a required capacity, not a valid path.
+     * In particular, do not let PathCombine scan an untouched stack buffer. */
+    if (windowsLength >= _countof(windows)) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    if (!PathCombineW(executable, windows, L"Sysnative\\rundll32.exe") ||
         !ResourceCreateTemporaryDirectory(Job->Directory) ||
         !PathCombineW(Job->DllPath, Job->Directory, L"setupapihost.dll")) return FALSE;
     LPCWSTR resource;
@@ -311,7 +339,8 @@ static VOID CALLBACK HelperWorker(PTP_CALLBACK_INSTANCE Instance, PVOID Context,
     /* Cancellation consumes no process ownership. A hung installer retains one
      * bounded slot, its package, dependencies and callback pin until actual exit. */
     if (job->Process) {
-        WaitForSingleObject(job->Process, INFINITE);
+        DWORD waitError = WaitForOwnedTermination(job->Process);
+        if (waitError) HelperError(job, waitError);
         DWORD code;
         if (!GetExitCodeProcess(job->Process, &code)) HelperError(job, GetLastError());
         else if (code) HelperError(job, ERROR_PROCESS_ABORTED);
@@ -327,19 +356,19 @@ static VOID CALLBACK HelperWorker(PTP_CALLBACK_INSTANCE Instance, PVOID Context,
 static BOOL ExecuteRunDll32(LPCWSTR Function, LPCWSTR Arguments, LPWSTR Response, DWORD ResponseCapacity)
 {
     ULONGLONG deadline = GetTickCount64() + RUN_DLL32_TIMEOUT;
-    if (!Response || !ResponseCapacity || ResponseCapacity > MAX_DEVICE_ID_LEN + 1) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!Response || !ResponseCapacity || ResponseCapacity > PB_HELPER_CREATE_RESPONSE_CAPACITY) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     Response[0] = 0;
     if (!HelperReserve()) return FALSE;
     HELPER_JOB *job = Zalloc(sizeof(*job));
     if (!job) { DWORD error = GetLastError(); HelperUnreserve(NULL); SetLastError(error); return FALSE; }
     job->References = 1; job->ResponseCapacity = ResponseCapacity;
-    job->Done = CreateEventW(NULL, TRUE, FALSE, NULL); job->Cancel = CreateEventW(NULL, TRUE, FALSE, NULL);
-    job->Function = AllocArray(wcslen(Function) + 1, sizeof(WCHAR));
-    job->Arguments = AllocArray(wcslen(Arguments) + 1, sizeof(WCHAR));
-    if (!job->Done || !job->Cancel || !job->Function || !job->Arguments ||
+    if (!CreateManualEventPair(FALSE, &job->Done, &job->Cancel) ||
+        !(job->Function = AllocArray(wcslen(Function) + 1, sizeof(WCHAR))) ||
+        !(job->Arguments = AllocArray(wcslen(Arguments) + 1, sizeof(WCHAR))) ||
         !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)&HelperModuleAnchor, &job->Module) ||
         !(job->Work = CreateThreadpoolWork(HelperWorker, job, NULL))) {
-        DWORD error = GetLastError(); HelperUnreserve(NULL); HelperDrop(job); SetLastError(error); return FALSE;
+        DWORD error = GetLastError(); HelperUnreserve(NULL); HelperDrop(job);
+        SetLastError(error ? error : ERROR_GEN_FAILURE); return FALSE;
     }
     wcscpy_s(job->Function, wcslen(Function) + 1, Function);
     wcscpy_s(job->Arguments, wcslen(Arguments) + 1, Arguments);

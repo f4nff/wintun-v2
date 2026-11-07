@@ -218,6 +218,8 @@ static void ReceiveOwnershipTests(void)
     CHECK(PbAdmitReceive(&l, 123, 0, slots, &d, 0, &complete) == PB_STALE && !complete);
     d.Token.Generation = 3;
     CHECK(PbAdmitReceive(&l, 123, 0, slots, &d, 1, &complete) == PB_STOPPED && complete && !slots[0].Active);
+    CHECK(PbAdmitReceive(&l, 123, 0, slots, &d, 0, &complete) == PB_STALE && !complete);
+    d.Token.Generation++;
     CHECK(PbAdmitReceive(&l, 123, 0, slots, &d, 0, &complete) == PB_OK);
     for (unsigned i = 0; i < 100000; ++i) {
         CHECK(PbAdmitReceive(&l, 123, 0, slots, &d, 0, &complete) == PB_STALE && !complete);
@@ -225,6 +227,73 @@ static void ReceiveOwnershipTests(void)
         slots[0].Active = 0; d.Token.Generation++;
         CHECK(PbAdmitReceive(&l, 123, 0, slots, &d, 0, &complete) == PB_OK);
     }
+}
+
+static void ReceiveTerminalTests(void)
+{
+    PB_LAYOUT l; CHECK(PbCalculateLayout(2, 32, 64, &l) == PB_OK);
+    PB_RX_SLOT slots[32] = { 0 }; PB_DESCRIPTOR good[32], bad[32];
+    unsigned retired = 0;
+    /* Complete all 32 independent rejections before checking the ledger. A
+     * failure completion transfers ownership just as a successful one does. */
+    for (unsigned i = 0; i < 32; ++i) {
+        good[i] = (PB_DESCRIPTOR){ .Token = {123, i == 31 ? UINT32_MAX : 1, (uint16_t)i, 1},
+            .Length = 20, .DataOffset = l.Queues[1].RxData + i * PB_BLOCK_SIZE };
+        bad[i] = good[i];
+        switch (i % 8) {
+        case 0: bad[i].Reserved16 = 1; break;
+        case 1: bad[i].Reserved64[0] = UINT64_MAX; break;
+        case 2: bad[i].Length = 0; break;
+        case 3: bad[i].Length = PB_BLOCK_SIZE + 1; break;
+        case 4: bad[i].DataOffset++; break;
+        case 5: bad[i].Type = PB_DESC_TCP_GSO; break;
+        case 6: bad[i].Flags = PB_CSUM_IPV4; break;
+        default: break; /* The valid descriptor is terminally stopped. */
+        }
+        uint32_t complete = 99;
+        CHECK(PbAdmitReceive(&l, 123, 1, slots, bad + i, i % 8 == 7, &complete) ==
+            (i % 8 == 7 ? PB_STOPPED : PB_INVALID));
+        CHECK(complete == 1 && !slots[i].Active);
+        retired += slots[i].Generation == good[i].Token.Generation;
+    }
+    printf("TERMINAL_RECEIVE32 rejected=28 stopped=4 retired=%u\n", retired);
+    fflush(stdout);
+    CHECK(retired == 32);
+    for (unsigned i = 0; i < 32; ++i) {
+        PB_RX_SLOT before[32]; memcpy(before, slots, sizeof(slots)); uint32_t complete = 99;
+        CHECK(PbAdmitReceive(&l, 123, 1, slots, bad + i, 0, &complete) == PB_STALE && !complete);
+        CHECK(PbAdmitReceive(&l, 123, 1, slots, good + i, 0, &complete) == PB_STALE && !complete);
+        CHECK(!memcmp(before, slots, sizeof(slots)));
+        PB_DESCRIPTOR next = good[i]; next.Token.Generation++;
+        if (!next.Token.Generation) {
+            CHECK(PbAdmitReceive(&l, 123, 1, slots, &next, 0, &complete) == PB_INVALID && complete);
+            CHECK(!memcmp(before, slots, sizeof(slots))); continue;
+        }
+        CHECK(PbAdmitReceive(&l, 123, 1, slots, &next, 0, &complete) == PB_OK && slots[i].Active);
+        PB_DESCRIPTOR future = next; future.Token.Generation++;
+        CHECK(PbAdmitReceive(&l, 123, 1, slots, &future, 0, &complete) == PB_BUSY && !complete);
+        CHECK(slots[i].Generation == next.Token.Generation && slots[i].Active);
+        slots[i].Active = 0;
+        CHECK(PbAdmitReceive(&l, 123, 1, slots, &next, 0, &complete) == PB_STALE && !complete);
+        CHECK(PbAdmitReceive(&l, 123, 1, slots, &future, 0, &complete) == PB_OK && slots[i].Active);
+        slots[i].Active = 0;
+    }
+    /* A response for another ownership domain cannot retire our local slot. */
+    for (unsigned shape = 0; shape < 5; ++shape) {
+        PB_DESCRIPTOR d = good[0]; d.Token.Generation = UINT32_MAX;
+        uint64_t epoch = 123;
+        switch (shape) {
+        case 0: d.Token.Epoch--; break;
+        case 1: d.Token.Queue = 0; break;
+        case 2: d.Token.Slot = 32; break;
+        case 3: d.Token.Generation = 0; break;
+        default: epoch = d.Token.Epoch = 0; break;
+        }
+        PB_RX_SLOT before[32]; memcpy(before, slots, sizeof(slots)); uint32_t complete = 99;
+        CHECK(PbAdmitReceive(&l, epoch, 1, slots, &d, 0, &complete) == PB_INVALID && complete);
+        CHECK(!memcmp(before, slots, sizeof(slots)));
+    }
+    puts("PASS: terminal receive generations; old/duplicate, active future, fresh reuse, maximum generation and foreign scope.");
 }
 
 static void OffloadPolicyTests(void)
@@ -236,12 +305,12 @@ static void OffloadPolicyTests(void)
     CHECK(PbResolveOffloads(PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) == PB_PROBE_SUPPORTED);
     CHECK(!(PbResolveOffloads(PB_RX_RSC4, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) & PB_RX_RSC4));
     CHECK(!(PbResolveOffloads(PB_RX_URO, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) & PB_RX_URO));
-    CHECK(!(PbResolveOffloads(PB_TX_LSO4 | PB_TX_TCP4_CHECKSUM, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) & PB_TX_LSO4));
-    CHECK(!(PbResolveOffloads(PB_TX_LSO6, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) & PB_TX_LSO6));
+    CHECK(PbResolveOffloads(PB_TX_LSO4 | PB_TX_TCP4_CHECKSUM, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) & PB_TX_LSO4);
+    CHECK(PbResolveOffloads(PB_TX_LSO6, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) & PB_TX_LSO6);
     CHECK(PbResolveOffloads(0xb6b3u, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) == 0xb6b3u);
     CHECK(PbResolveOffloads(0x1febfu, PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) == 0x1febfu);
     CHECK((PbResolveOffloads(0xb6b3u & ~(PB_TX_IP4_CHECKSUM | PB_TX_TCP4_CHECKSUM | PB_RX_TCP4_CHECKSUM),
-        PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) & (PB_TX_LSO4 | PB_TX_LSO6 | PB_RX_RSC4 | PB_RX_RSC6)) == (PB_TX_LSO6 | PB_RX_RSC6));
+        PB_PROBE_SUPPORTED, PB_PROBE_SUPPORTED, 1) & (PB_TX_LSO4 | PB_TX_LSO6 | PB_RX_RSC4 | PB_RX_RSC6)) == (PB_TX_LSO4 | PB_TX_LSO6 | PB_RX_RSC6));
     for (uint32_t parameter = 0; parameter <= 5; ++parameter) {
         uint32_t mask = PB_PROBE_SUPPORTED;
         PB_RESULT result = PbApplyChecksumParameter(parameter, PB_TX_UDP4_CHECKSUM, PB_RX_UDP4_CHECKSUM, &mask);
@@ -311,7 +380,7 @@ static void ConcurrentQueueTests(void)
 
 int main(void)
 {
-    LayoutTests(); QueueTests(); PoolTests(); DescriptorTests(); LifetimeTests(); ReceiveOwnershipTests(); OffloadPolicyTests(); ConcurrentQueueTests();
+    LayoutTests(); QueueTests(); PoolTests(); DescriptorTests(); LifetimeTests(); ReceiveOwnershipTests(); ReceiveTerminalTests(); OffloadPolicyTests(); ConcurrentQueueTests();
     puts("PASS: layout, queue, pool, descriptor, drain, offload policy; 100000 ownership transitions; 1000000 concurrent descriptors.");
     return 0;
 }

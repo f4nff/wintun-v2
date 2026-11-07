@@ -2,10 +2,17 @@
 #pragma once
 static VOID PbV2Pause(TUN_CTX *ctx)
 {
+    /* Unregister detaches V2 before waiting for its outstanding receives. Join
+     * that owner before treating NULL as drained; otherwise pin its snapshot.
+     * The Returns pin, not RegistrationLock, covers the subsequent waits. */
+    KeEnterCriticalRegion();
+    ExAcquireResourceSharedLite(&ctx->Device.RegistrationLock, TRUE);
     KIRQL irql = ExAcquireSpinLockShared(&ctx->TransitionLock);
     PB_KERNEL_SESSION *s = ctx->V2;
     BOOLEAN held = s && ExAcquireRundownProtection(&s->Returns);
     ExReleaseSpinLockShared(&ctx->TransitionLock, irql);
+    ExReleaseResourceLite(&ctx->Device.RegistrationLock);
+    KeLeaveCriticalRegion();
     /* A worker may have sampled Running before pause, then skipped receive
      * after it. Its old wait set excludes RunningEvent. Recheck via the queue
      * event so paused retirement and the later restart cannot lose progress.

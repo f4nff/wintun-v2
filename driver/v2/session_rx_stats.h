@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #pragma once
+#include "platform_nbl.h"
 /* Private to one receive transaction. Publish only if this chain is indicated;
  * a late fault discards these sums together with its unindicated chain. */
 typedef struct PB_RX_INDICATION_STATS {
@@ -11,7 +12,7 @@ static __forceinline VOID PbV2AccumulateRxStats(PB_RX_INDICATION_STATS *stats, N
 {
     PB_RX_RECORD *record = (PB_RX_RECORD *)((ULONG_PTR)NET_BUFFER_LIST_NEXT_NBL_EX(nbl) & ~(ULONG_PTR)1);
     if (record->Count < 2) return;
-    NDIS_RSC_NBL_INFO rsc = { .Value = NET_BUFFER_LIST_INFO(nbl, TcpRecvSegCoalesceInfo) };
+    NDIS_RSC_NBL_INFO rsc = { .Value = PB_NBL_GET(nbl, TcpRecvSegCoalesceInfo, 30) };
     if (rsc.Info.CoalescedSegCount) {
         stats->RscPackets += record->Count; stats->RscBytes += record->TcpPayloadLength; stats->RscEvents++;
     } else {

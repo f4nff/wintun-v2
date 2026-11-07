@@ -84,17 +84,42 @@ static PB_RESULT WINAPI ReceiveBatch(PB_USER_QUEUE *q, PB_LEASE *leases, uint32_
     return QueueLeave(q, result);
 }
 
+/* Output counts must remain caller-owned while publishing packet ownership.
+ * Ordinary stack/heap outputs take this constant-time fast path. Only a pointer
+ * inside the mapping needs the bounded token walk; other held loans stay valid. */
+static BOOL CountInTransferredPacket(PB_USER_QUEUE *q, const PB_TOKEN *tokens, uint32_t count,
+    const uint32_t *output, BOOL rx)
+{
+    uintptr_t address = (uintptr_t)output, region = (uintptr_t)q->Session->Region;
+    if (address - region >= q->Session->Layout.RegionSize) return FALSE;
+    uintptr_t data = region + (rx ? q->Session->Layout.Queues[q->Index].RxData : q->Session->Layout.Queues[q->Index].TxData);
+    for (uint32_t i = 0; i < count; ++i) {
+        uintptr_t packet = data + (uintptr_t)tokens[i].Slot * PB_BLOCK_SIZE;
+        if (address >= packet ? address - packet < PB_BLOCK_SIZE : packet - address < sizeof(*output)) return TRUE;
+    }
+    return FALSE;
+}
 static PB_RESULT WINAPI ReleaseBatch(PB_USER_QUEUE *q, const PB_TOKEN *tokens, uint32_t count, uint32_t *accepted)
 {
     if (accepted) *accepted = 0;
     if (!accepted) return PB_INVALID;
     PB_RESULT result = QueueEnter(q, PB_QUEUE_RETIREMENT); if (result != PB_OK) return result;
-    result = PbValidateTokens(&q->Tx, tokens, count, PB_SLOT_PUBLISHED);
+    if (!tokens || !count || count > PB_MAX_BATCH) return QueueLeave(q, PB_INVALID);
+    /* Input may reside in a loan being returned. The peer can overwrite that
+     * payload as soon as Producer is published, before this call retires local
+     * bookkeeping. Keep every post-publication read in private storage. */
+    PB_TOKEN snapshot[PB_MAX_BATCH];
+    memcpy(snapshot, tokens, count * sizeof(*tokens));
+    result = PbValidateTokens(&q->Tx, snapshot, count, PB_SLOT_PUBLISHED);
     if (result == PB_OK) {
-        uint32_t notify = 0;
+        /* Reject before publishing or dropping any loan. Otherwise a native
+         * producer can overwrite the output, or our final store can overwrite
+         * its next packet. A private count alone cannot make that storage live. */
+        if (CountInTransferredPacket(q, snapshot, count, accepted, FALSE)) return QueueLeave(q, PB_INVALID);
+        uint32_t notify = 0, retired = 0;
         BOOL local = ReadAcquire(&q->Session->Fatal) != 0;
         if (!local) {
-            result = PbQueuePushTokens(&q->Rings[PB_QUEUE_TX_RECYCLE], tokens, count, accepted, &notify);
+            result = PbQueuePushTokens(&q->Rings[PB_QUEUE_TX_RECYCLE], snapshot, count, &retired, &notify);
             if (result == PB_CORRUPT) { FaultSession(q->Session); local = TRUE; }
             else if (result == PB_FULL && ReadAcquire(&q->Session->CloseRequested)) local = TRUE;
         }
@@ -102,31 +127,36 @@ static PB_RESULT WINAPI ReleaseBatch(PB_USER_QUEUE *q, const PB_TOKEN *tokens, u
          * ring must not pin the user view, including a native-only fault. No
          * slot may be reused; physical reclamation still requires the native
          * close barrier. Running sessions retain ordinary PB_FULL backpressure. */
-        if (local) { *accepted = count; result = PB_OK; }
+        if (local) { retired = count; result = PB_OK; }
         if (result == PB_OK) {
-            for (uint32_t i = 0; i < *accepted; ++i) PbPoolTransition(&q->Tx, tokens + i, PB_SLOT_PUBLISHED, PB_SLOT_FREE);
-            WriteRelease(&q->Loans, ReadAcquire(&q->Loans) - (LONG)*accepted);
+            for (uint32_t i = 0; i < retired; ++i) PbPoolTransition(&q->Tx, snapshot + i, PB_SLOT_PUBLISHED, PB_SLOT_FREE);
+            WriteRelease(&q->Loans, ReadAcquire(&q->Loans) - (LONG)retired);
+            *accepted = retired;
             if (!local && notify) SetEvent(q->KernelEvent);
         }
     }
     return QueueLeave(q, result);
 }
 
-static PB_RESULT WINAPI ReserveBatch(PB_USER_QUEUE *q, PB_LEASE *leases, uint32_t requested, uint32_t *count)
+static PB_RESULT WINAPI ReserveBatch(PB_USER_QUEUE *q, _Out_writes_to_(requested, *count) PB_LEASE *leases,
+    uint32_t requested, _Out_ uint32_t *count)
 {
     if (count) *count = 0;
     if (!leases || !count || !requested || requested > PB_MAX_BATCH) return PB_INVALID;
     PB_RESULT result = QueueEnter(q, PB_QUEUE_ADMISSION); if (result != PB_OK) return result;
     if (ReadAcquire(&q->Session->Draining) || ReadAcquire(&q->Session->CloseRequested)) return QueueLeave(q, PB_STOPPED);
+    uint32_t reserved = 0;
     for (uint32_t i = 0; i < requested; ++i) {
         PB_TOKEN token; result = PbPoolReserve(&q->Rx, &token); if (result != PB_OK) break;
-        memset(leases + i, 0, sizeof(*leases)); leases[i].Descriptor.Token = token;
-        leases[i].Descriptor.DataOffset = q->Session->Layout.Queues[q->Index].RxData + token.Slot * PB_BLOCK_SIZE;
-        leases[i].Data = q->Session->Region + leases[i].Descriptor.DataOffset; leases[i].Capacity = 65535;
-        (*count)++;
+        PB_LEASE lease = { 0 }; lease.Descriptor.Token = token;
+        lease.Descriptor.DataOffset = q->Session->Layout.Queues[q->Index].RxData + token.Slot * PB_BLOCK_SIZE;
+        lease.Data = q->Session->Region + lease.Descriptor.DataOffset; lease.Capacity = 65535;
+        leases[i] = lease;
+        reserved++;
     }
-    WriteRelease(&q->Loans, ReadAcquire(&q->Loans) + (LONG)*count);
-    return QueueLeave(q, *count ? PB_OK : result);
+    WriteRelease(&q->Loans, ReadAcquire(&q->Loans) + (LONG)reserved);
+    *count = reserved;
+    return QueueLeave(q, reserved ? PB_OK : result);
 }
 static PB_RESULT WINAPI CancelBatch(PB_USER_QUEUE *q, const PB_TOKEN *tokens, uint32_t count)
 {
@@ -152,12 +182,14 @@ static PB_RESULT WINAPI CommitBatch(PB_USER_QUEUE *q, const PB_LEASE *leases, ui
     }
     result = PbValidateTokens(&q->Rx, tokens, count, PB_SLOT_RESERVED);
     if (result == PB_OK) {
-        uint32_t notify;
-        result = PbQueuePush(&q->Rings[PB_QUEUE_RX_SUBMIT], items, count, accepted, &notify);
+        if (CountInTransferredPacket(q, tokens, count, accepted, TRUE)) return QueueLeave(q, PB_INVALID);
+        uint32_t notify, published = 0;
+        result = PbQueuePush(&q->Rings[PB_QUEUE_RX_SUBMIT], items, count, &published, &notify);
         if (result == PB_OK) {
-            for (uint32_t i = 0; i < *accepted; ++i) PbPoolTransition(&q->Rx, tokens + i, PB_SLOT_RESERVED, PB_SLOT_PUBLISHED);
-            WriteRelease(&q->Loans, ReadAcquire(&q->Loans) - (LONG)*accepted);
-            WriteRelease(&q->Published, ReadAcquire(&q->Published) + (LONG)*accepted);
+            for (uint32_t i = 0; i < published; ++i) PbPoolTransition(&q->Rx, tokens + i, PB_SLOT_RESERVED, PB_SLOT_PUBLISHED);
+            WriteRelease(&q->Loans, ReadAcquire(&q->Loans) - (LONG)published);
+            WriteRelease(&q->Published, ReadAcquire(&q->Published) + (LONG)published);
+            *accepted = published;
             if (notify) SetEvent(q->KernelEvent);
         }
     }
@@ -167,11 +199,12 @@ static PB_RESULT WINAPI CommitBatch(PB_USER_QUEUE *q, const PB_LEASE *leases, ui
 static PB_RESULT PollInternal(PB_USER_QUEUE *q, PB_DESCRIPTOR *items, uint32_t capacity, uint32_t *count)
 {
     *count = 0;
-    PB_RESULT result = PbQueuePop(&q->Rings[PB_QUEUE_RX_COMPLETE], items, capacity, count);
+    uint32_t completed = 0;
+    PB_RESULT result = PbQueuePop(&q->Rings[PB_QUEUE_RX_COMPLETE], items, capacity, &completed);
     if (result != PB_OK) return result;
     PB_TOKEN tokens[PB_MAX_BATCH];
-    for (uint32_t i = 0; i < *count; ++i) tokens[i] = items[i].Token;
-    if (PbValidateTokens(&q->Rx, tokens, *count, PB_SLOT_PUBLISHED) != PB_OK) {
+    for (uint32_t i = 0; i < completed; ++i) tokens[i] = items[i].Token;
+    if (PbValidateTokens(&q->Rx, tokens, completed, PB_SLOT_PUBLISHED) != PB_OK) {
         /* Pop already released ring space. A parked native producer must retry
          * even though this batch cannot retire any private ownership. */
         *count = 0; SetEvent(q->KernelEvent); return PB_CORRUPT;
@@ -179,9 +212,10 @@ static PB_RESULT PollInternal(PB_USER_QUEUE *q, PB_DESCRIPTOR *items, uint32_t c
     /* The owner/DataGate exclude observers of an intermediate COMPLETE state.
      * Keep the checked transition and free-index maintenance after validating
      * the whole batch, without validating/writing an unobservable state twice. */
-    for (uint32_t i = 0; i < *count; ++i)
+    for (uint32_t i = 0; i < completed; ++i)
         PbPoolTransition(&q->Rx, tokens + i, PB_SLOT_PUBLISHED, PB_SLOT_FREE);
-    WriteRelease(&q->Published, ReadAcquire(&q->Published) - (LONG)*count);
+    WriteRelease(&q->Published, ReadAcquire(&q->Published) - (LONG)completed);
+    *count = completed;
     /* Wake after every space release. A non-full producer snapshot before Pop
      * does not prove the producer stayed unblocked: it can fill the ring and
      * park before Pop publishes Consumer. Armed only requests data wakes. */
@@ -195,7 +229,7 @@ static PB_RESULT WINAPI PollCompletions(PB_USER_QUEUE *q, PB_DESCRIPTOR *items, 
     return QueueLeave(q, PollInternal(q, items, capacity, count));
 }
 static PB_RESULT StatusInternal(PB_SESSION *s, PB_V2_STATUS *status);
-static PB_RESULT WINAPI Wait(PB_USER_QUEUE *q, uint32_t timeout)
+PB_RESULT PbCompatWait(PB_USER_QUEUE *q, HANDLE external, BOOL receive, uint32_t timeout)
 {
     if (!q || !q->Session) return PB_INVALID;
     if (ReadAcquire(&q->Session->Fatal)) return PB_CORRUPT;
@@ -203,19 +237,21 @@ static PB_RESULT WINAPI Wait(PB_USER_QUEUE *q, uint32_t timeout)
     PB_RESULT result = QueueEnter(q, PB_QUEUE_ADMISSION); if (result != PB_OK) return result;
     if (ReadAcquire(&q->Session->CloseRequested)) return QueueLeave(q, PB_STOPPED);
     uint32_t tx = 0, rx = 0;
-    result = PbQueueArm(&q->Rings[PB_QUEUE_TX_READY], &tx);
+    result = receive ? PbQueueArm(&q->Rings[PB_QUEUE_TX_READY], &tx) : PB_OK;
     if (result == PB_OK) result = PbQueueArm(&q->Rings[PB_QUEUE_RX_COMPLETE], &rx);
     ReleaseSRWLockShared(&q->Session->DataGate);
     if (result == PB_OK && !tx && !rx) {
-        HANDLE events[] = { q->Session->ClosingEvent, q->UserEvent };
+        HANDLE events[] = { q->Session->ClosingEvent, q->UserEvent, external };
 #ifdef PB_API_TESTS
         InterlockedIncrement(&q->Session->TestWaiters);
 #endif
-        DWORD waited = WaitForMultipleObjects(2, events, FALSE, timeout);
+        DWORD waited = WaitForMultipleObjects(external ? 3 : 2, events, FALSE, timeout);
 #ifdef PB_API_TESTS
         InterlockedDecrement(&q->Session->TestWaiters);
 #endif
-        result = waited == WAIT_OBJECT_0 ? PB_STOPPED : waited == WAIT_OBJECT_0 + 1 ? PB_OK : waited == WAIT_TIMEOUT ? PB_EMPTY : PB_CORRUPT;
+        result = waited == WAIT_OBJECT_0 ? PB_STOPPED :
+            (waited == WAIT_OBJECT_0 + 1 || (external && waited == WAIT_OBJECT_0 + 2)) ? PB_OK :
+            waited == WAIT_TIMEOUT ? PB_EMPTY : PB_CORRUPT;
     }
     if (ReadAcquire(&q->Session->CloseRequested)) result = PB_STOPPED;
     if ((result == PB_OK || result == PB_EMPTY) &&
@@ -226,4 +262,8 @@ static PB_RESULT WINAPI Wait(PB_USER_QUEUE *q, uint32_t timeout)
         result = PB_STOPPED;
     }
     return FinishQueueCall(q, result);
+}
+static PB_RESULT WINAPI Wait(PB_USER_QUEUE *q, uint32_t timeout)
+{
+    return PbCompatWait(q, NULL, TRUE, timeout);
 }

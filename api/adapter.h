@@ -10,9 +10,13 @@
 #include <SetupAPI.h>
 #include <cfgmgr32.h>
 #include <Windows.h>
+#include "../include/packetbridge_identity.h"
 
-#define WINTUN_HWID L"Wintun"
+#define WINTUN_HWID PB_HARDWARE_ID
 #define WINTUN_ENUMERATOR (IsWindows7 ? L"ROOT\\" WINTUN_HWID : L"SWD\\" WINTUN_HWID)
+/* The v2 API permits 128 visible characters; keep its terminator in addition
+ * to the original Wintun API's guaranteed MAX_ADAPTER_NAME-1 contract. */
+#define PB_MAX_ADAPTER_NAME 129u
 
 extern const DEVPROPKEY DEVPKEY_Wintun_Name;
 
@@ -89,9 +93,10 @@ AdapterGetDeviceObjectFileName(_In_z_ LPCWSTR InstanceId);
 VOID AdapterCleanupOrphanedDevices(VOID);
 
 /**
- * Cleans up adapters that use the old enumerator.
+ * Cleans up adapters that use the old enumerator. FALSE keeps the one-time
+ * sweep eligible for a later request after cancellation or an uncertain scan.
  */
-VOID AdapterCleanupLegacyDevices(VOID);
+BOOL AdapterCleanupLegacyDevices(VOID);
 VOID AdapterCleanupDetach(VOID);
 BOOL AdapterCleanupCancelled(VOID);
 

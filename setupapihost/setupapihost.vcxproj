@@ -27,6 +27,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="host.c" />
+    <ClInclude Include="..\common\system_library.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="resources.rc" />

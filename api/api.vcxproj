@@ -52,9 +52,15 @@
   <ItemGroup>
     <ClInclude Include="adapter_win7.h" />
     <ClInclude Include="cleanup.h" />
+    <ClInclude Include="orphan_cleanup.h" />
+    <ClInclude Include="orphan_owner.h" />
+    <ClInclude Include="event_pair.h" />
     <ClInclude Include="main.h" />
+    <ClInclude Include="..\common\system_library.h" />
     <ClInclude Include="operation.h" />
     <ClInclude Include="operation_runtime.h" />
+    <ClInclude Include="overlapped_wait.h" />
+    <ClInclude Include="termination_wait.h" />
     <ClInclude Include="adapter.h" />
     <ClInclude Include="driver.h" />
     <ClInclude Include="logger.h" />
@@ -97,4 +103,10 @@
   <Target Name="CleanNci">
     <Delete Files="$(IntDir)nci.obj;$(IntDir)nci.lib" />
   </Target>
+  <!-- The PowerShell pipeline owns identity, fingerprints, resources and tests. -->
+  <Target Name="Build">
+    <Error Condition="'$(Platform)'!='x64'" Text="The unified driver pipeline currently builds x64. Other architecture ports require separate ABI and runtime acceptance." />
+    <Exec WorkingDirectory="$(ProjectDir).." Command="pwsh -NoProfile -File tools\build\build.ps1 -Stage Api" />
+  </Target>
+  <Target Name="Rebuild" DependsOnTargets="Build" />
 </Project>

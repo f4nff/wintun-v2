@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Historical standalone installer retained for its regression fixtures.
+ * Shipping builds use adapter_unified.c and the shared downlevel installer. */
 #define WIN32_LEAN_AND_MEAN
 #include "adapter.h"
 #include "driver_package.h"

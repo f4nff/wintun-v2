@@ -49,4 +49,10 @@
   <Import Project="..\wintun.props.user" Condition="exists('..\wintun.props.user')" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
+  <!-- The PowerShell pipeline owns identity, fingerprints, resources and tests. -->
+  <Target Name="Build">
+    <Error Condition="'$(Platform)'!='x64'" Text="The unified driver pipeline currently builds x64. Other architecture ports require separate ABI and runtime acceptance." />
+    <Exec WorkingDirectory="$(ProjectDir).." Command="pwsh -NoProfile -File tools\build\build.ps1 -Stage Driver" />
+  </Target>
+  <Target Name="Rebuild" DependsOnTargets="Build" />
 </Project>

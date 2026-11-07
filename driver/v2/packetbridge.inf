@@ -9,9 +9,9 @@ CatalogFile = packetbridge.cat
 PnpLockdown = 1
 
 [Manufacturer]
-%Provider% = PacketBridgeV2, NTamd64.10.0...26100
+%Provider% = PacketBridgeV2, NTamd64.6.1
 
-[PacketBridgeV2.NTamd64.10.0...26100]
+[PacketBridgeV2.NTamd64.6.1]
 %Description% = Install, PacketBridgeV2
 
 [SourceDisksNames]
@@ -21,7 +21,7 @@ PnpLockdown = 1
 packetbridge.sys = 1
 
 [DestinationDirs]
-CopyDriver = 13
+CopyDriver = 12
 
 [CopyDriver]
 packetbridge.sys
@@ -49,7 +49,7 @@ Description = %Description%
 ServiceType = 1
 StartType = 3
 ErrorControl = 1
-ServiceBinary = %13%\packetbridge.sys
+ServiceBinary = %12%\packetbridge.sys
 
 [Strings]
 Provider = "PacketBridgeV2 Project"

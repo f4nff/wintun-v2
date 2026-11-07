@@ -1,3 +1,5 @@
+> 历史实现记录：统一发布构建使用 `api/v2/adapter_unified.c` 和共享安装器。本文描述的独立现代安装/按名称恢复路径只保留用于既有测试，不用于统一 DLL。
+
 # PacketBridgeV2 2.0.0：原生安装修复
 
 产品版本保持 2.0.0/x64；API/Data 2.1、packet 1.1、lifecycle 1、probe 以及

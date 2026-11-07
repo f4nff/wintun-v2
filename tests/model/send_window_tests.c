@@ -137,7 +137,7 @@ static PB_RESULT PbPoolReserve(PB_POOL *pool,PB_TOKEN *token)
     return ProductionPoolReserve(pool,token);
 }
 #define NormalPagePriority 0u
-#define MdlMappingNoExecute 0u
+#define POOL_NX_OPTIN 1
 static ULONG MmGetMdlByteCount(MDL *mdl) {MdlVisits++;return mdl->Length;}
 static UCHAR *MmGetSystemAddressForMdlSafe(MDL *mdl,ULONG priority)
 {(void)priority;if(ReadingPayload) PayloadMaps++;else PrefixMaps++;return mdl->Failed?NULL:mdl->Address;}

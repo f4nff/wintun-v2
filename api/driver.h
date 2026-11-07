@@ -8,8 +8,9 @@
 #include "wintun.h"
 #include <Windows.h>
 #include <SetupAPI.h>
+#include "../include/packetbridge_identity.h"
 
-#define WINTUN_HWID L"Wintun"
+#define WINTUN_HWID PB_HARDWARE_ID
 
 typedef struct _SP_DEVINFO_DATA_LIST SP_DEVINFO_DATA_LIST;
 

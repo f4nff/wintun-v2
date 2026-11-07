@@ -133,6 +133,36 @@ class SegmentationTests(unittest.TestCase):
             self.assertEqual(item[80:120], b"\x01" * 40)
             self.validate(item, plan)
 
+    def test_tcp_timestamp_option_survives_one_checked_32_segment_batch(self):
+        # These are opaque wire TSval/TSecr fields, not wall-clock deadlines.
+        for ip in (4, 6):
+            for tsval, tsecr in ((0, 0xffffffff), (0xfffffff0, 0x80000001)):
+                with self.subTest(ip=ip, tsval=tsval, tsecr=tsecr):
+                    options = b"\x01\x01\x08\x0a" + struct.pack("!II", tsval, tsecr)
+                    parts = [struct.pack("!IQQ", i, 0x0123456789abcdef,
+                                         0xfedcba9876543210) + bytes([i]) * 980
+                             for i in range(32)]
+                    original = packet(ip, 6, b"".join(parts), tcp_options=options)
+                    source, plan, status = self.plan(original, 1, 1000)
+                    self.assertEqual((status, plan.count), (0, 32))
+                    before = source.raw
+                    buffers = [C.create_string_buffer(1100) for _ in range(32)]
+                    outputs = (Output * 32)(*(Output(C.addressof(b), len(b), 0)
+                                              for b in buffers))
+                    count = C.c_uint32(0xdeadbeef)
+                    self.assertEqual(DLL.PbWriteSegmentBatchChecked(
+                        source, len(original), C.byref(plan), 0, outputs, 32,
+                        C.byref(count)), 0)
+                    self.assertEqual(count.value, 32)
+                    self.assertEqual(source.raw, before)
+                    for i, output in enumerate(outputs):
+                        data = buffers[i].raw[:output.length]
+                        self.assertEqual(data[plan.l4 + 20:plan.header], options)
+                        self.assertEqual(data[plan.header:], parts[i])
+                        self.assertEqual(struct.unpack_from("!I", data, plan.l4 + 4)[0],
+                                         (0xfffffff0 + i * 1000) & 0xffffffff)
+                        self.validate(data, plan)
+
     def test_ipv6_extension_header_checksum(self):
         original = packet(6, 6, b"b" * 2501, extension=b"\x06\x00" + b"\0" * 6)
         plan, output = self.segments(original, 1, 1200)

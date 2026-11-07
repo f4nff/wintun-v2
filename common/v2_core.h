@@ -89,7 +89,10 @@ PB_RESULT PbPoolTransition(PB_POOL *pool, const PB_TOKEN *token, uint32_t before
 PB_RESULT PbPoolImport(PB_POOL *pool, const PB_DESCRIPTOR *items, uint32_t count);
 PB_RESULT PbValidateTokens(PB_POOL *pool, const PB_TOKEN *tokens, uint32_t count, uint32_t state);
 PB_RESULT PbValidateDescriptor(const PB_LAYOUT *layout, uint64_t epoch, uint32_t queue, int rx, const PB_DESCRIPTOR *d, uint32_t types);
-/* Called under the queue RX lock. A repeated/old live token never authorizes a completion. */
+/* Called under the queue RX lock. Any completion ends a scoped nonzero
+ * generation, including malformed/stopped submissions. Repeated/old tokens
+ * and future generations of an active slot never authorize a completion or
+ * advance that slot's generation. Foreign tokens do not retire local slots. */
 PB_RESULT PbAdmitReceive(const PB_LAYOUT *layout, uint64_t epoch, uint32_t queue, PB_RX_SLOT *slots,
     const PB_DESCRIPTOR *descriptor, int draining, uint32_t *completeOnFailure);
 void PbLifetimeInitialize(PB_LIFETIME *life);

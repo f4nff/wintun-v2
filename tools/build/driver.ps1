@@ -11,10 +11,11 @@ if ((Test-Path -LiteralPath "$driverDir\packetbridge.cat") -and
 }
 $kernelArgs = @('/nologo','/c','/O2','/Oi','/GL','/Gy','/GF','/Zi','/W4','/Zl','/kernel','/GS','/Gz','/Zp8','/Oy-',
     '/volatile:iso','/d2epilogunwind','/D_WIN64','/D_AMD64_','/DAMD64',
-    '/D_WIN32_WINNT=0x0A00','/DWINVER=0x0A00','/DNTDDI_VERSION=0x0A000010',
+    '/D_WIN32_WINNT=0x0601','/DWINVER=0x0601','/DNTDDI_VERSION=0x06010000',
+    '/DPOOL_ZERO_DOWN_LEVEL_SUPPORT','/DPOOL_NX_OPTIN=1',
     '/DDBG=0','/DNDEBUG','/DUNICODE','/D_UNICODE',
     '/Dtry=__try','/Dexcept=__except','/Dfinally=__finally','/Dleave=__leave',
-    '/DNDIS_MINIPORT_DRIVER=1','/DNDIS689_MINIPORT=1','/DNDIS_WDM=1','/DPACKETBRIDGE_PROBE=1','/DPACKETBRIDGE_KERNEL=1',
+    '/DNDIS_MINIPORT_DRIVER=1','/DNDIS620_MINIPORT=1','/DNDIS689_MINIPORT=1','/DNDIS_WDM=1','/DPACKETBRIDGE_KERNEL=1',
     "/I$script:WdkRoot\Include\$script:KitVersion\km\crt", "/I$script:WdkRoot\Include\$script:KitVersion\km",
     "/I$script:SdkRoot\Include\$script:KitVersion\shared", "/I$script:WdkRoot\Include\$script:KitVersion\shared",
     "/I$script:RepoRoot\include") + $script:VersionArguments
@@ -27,7 +28,7 @@ Invoke-BuildTool 'cl.exe' ($kernelArgs + @("/Fo$objectDir\flow-kernel.obj", "/Fd
 Invoke-BuildTool 'cl.exe' ($kernelArgs + @("/Fo$objectDir\ethernet-kernel.obj", "/Fd$objectDir\ethernet-kernel.pdb",'common\ethernet.c'))
 Invoke-BuildTool (Join-Path $script:SdkBin 'rc.exe') (@('/nologo',"/I$script:RepoRoot\include", "/fo$objectDir\driver.res") + $script:VersionArguments + @('driver\v2\packetbridge.rc'))
 Invoke-BuildTool 'link.exe' @('/nologo','/driver','/kernel','/nodefaultlib','/entry:GsDriverEntry','/machine:x64',
-    '/subsystem:native,10.00','/osversion:10.0','/version:1.0','/release','/incremental:no','/ltcg','/opt:ref','/opt:icf',
+    '/subsystem:native,6.01','/osversion:6.1','/version:1.0','/release','/incremental:no','/ltcg','/opt:ref','/opt:icf',
     '/debug:full','/merge:_TEXT=.text','/merge:_PAGE=PAGE','/section:INIT,d',
     "/out:$driverDir\packetbridge.sys", "/pdb:$driverDir\packetbridge.pdb",
     "/libpath:$script:WdkRoot\Lib\$script:KitVersion\km\x64", "$objectDir\driver.obj", "$objectDir\packet-kernel.obj", "$objectDir\core-kernel.obj", "$objectDir\coalesce-kernel.obj", "$objectDir\policy-kernel.obj", "$objectDir\flow-kernel.obj", "$objectDir\driver.res",
@@ -41,7 +42,7 @@ $infReader = [IO.StreamReader]::new($infPath, [Text.UTF8Encoding]::new($false), 
 try { $null = $infReader.ReadToEnd(); $infEncoding = $infReader.CurrentEncoding }
 finally { $infReader.Dispose() }
 [IO.File]::AppendAllText($infPath, "`r`n; SourceFingerprint=$script:SourceFingerprint`r`n", $infEncoding)
-Invoke-BuildTool "$script:WdkRoot\bin\$script:KitVersion\x86\Inf2Cat.exe" @("/driver:$driverDir",'/os:10_GE_X64','/uselocaltime')
+Invoke-BuildTool "$script:WdkRoot\bin\$script:KitVersion\x86\Inf2Cat.exe" @("/driver:$driverDir",'/os:7_X64,8_X64,6_3_X64,10_X64,10_GE_X64','/uselocaltime')
 if ((Get-Item -LiteralPath "$driverDir\packetbridge.sys").VersionInfo.FileVersion -ne $script:Version) { throw 'Driver PE version mismatch' }
-Write-ArtifactManifest $driverDir 'v2-development-unsigned' @{ data_abi = $script:DataAbiMajor; data_abi_minor = $script:DataAbiMinor; runtime_tested = $false; default_mask = 0; rx_offloads_implemented = $true; production_ready = $false }
+Write-ArtifactManifest $driverDir 'v2-development-unsigned' @{ data_abi = $script:DataAbiMajor; data_abi_minor = $script:DataAbiMinor; runtime_tested = $false; default_mask = 0; rx_offloads_implemented = $true; production_ready = $false; minimum_os_target = 'Windows 7 SP1 x64'; ndis_minimum = '6.20'; ndis_maximum = '6.89'; capability_gated_offloads = $true; legacy_ring_protocol = $false }
 Get-Item -LiteralPath "$driverDir\packetbridge.sys", "$driverDir\packetbridge.inf", "$driverDir\packetbridge.cat" | Select-Object FullName,Length

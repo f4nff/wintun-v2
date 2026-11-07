@@ -13,7 +13,6 @@ typedef struct PB_PROBE_STATE {
     volatile LONG NdisMask;
     volatile LONG EncapsulationMask;
     volatile LONG V2SessionActive;
-    LONG ReceiveCleanupCount;
     EX_RUNDOWN_REF ReturnRundown;
     KEVENT RunningEvent;
     KSPIN_LOCK StatusLock;

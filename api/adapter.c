@@ -3,6 +3,7 @@
  * Copyright (C) 2018-2026 WireGuard LLC. All Rights Reserved.
  */
 
+#include <winsock2.h>
 #include <Windows.h>
 #include <winternl.h>
 #include <cfgmgr32.h>
@@ -48,69 +49,10 @@ const DEVPROPKEY DEVPKEY_Wintun_Name = {
     DEVPROPID_FIRST_USABLE + 1
 };
 
-_Must_inspect_result_
-static _Return_type_success_(return != FALSE)
-BOOL
-PopulateAdapterData(_Inout_ WINTUN_ADAPTER *Adapter)
-{
-    DWORD LastError = ERROR_SUCCESS;
-
-    /* Open HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\<class>\<id> registry key. */
-    HKEY Key =
-        SetupDiOpenDevRegKey(Adapter->DevInfo, &Adapter->DevInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_QUERY_VALUE);
-    if (Key == INVALID_HANDLE_VALUE)
-    {
-        LOG_LAST_ERROR(L"Failed to open adapter device registry key");
-        return FALSE;
-    }
-
-    LPWSTR ValueStr = RegistryQueryString(Key, L"NetCfgInstanceId", TRUE);
-    if (!ValueStr)
-    {
-        WCHAR RegPath[MAX_REG_PATH];
-        LoggerGetRegistryKeyPath(Key, RegPath);
-        LastError = LOG(WINTUN_LOG_ERR, L"Failed to get %.*s\\NetCfgInstanceId", MAX_REG_PATH, RegPath);
-        goto cleanupKey;
-    }
-    if (FAILED(CLSIDFromString(ValueStr, &Adapter->CfgInstanceID)))
-    {
-        WCHAR RegPath[MAX_REG_PATH];
-        LoggerGetRegistryKeyPath(Key, RegPath);
-        LastError = LOG(WINTUN_LOG_ERR, L"%.*s\\NetCfgInstanceId is not a GUID: %s", MAX_REG_PATH, RegPath, ValueStr);
-        Free(ValueStr);
-        goto cleanupKey;
-    }
-    Free(ValueStr);
-
-    if (!RegistryQueryDWORD(Key, L"NetLuidIndex", &Adapter->LuidIndex, TRUE))
-    {
-        WCHAR RegPath[MAX_REG_PATH];
-        LoggerGetRegistryKeyPath(Key, RegPath);
-        LastError = LOG(WINTUN_LOG_ERR, L"Failed to get %.*s\\NetLuidIndex", MAX_REG_PATH, RegPath);
-        goto cleanupKey;
-    }
-
-    if (!RegistryQueryDWORD(Key, L"*IfType", &Adapter->IfType, TRUE))
-    {
-        WCHAR RegPath[MAX_REG_PATH];
-        LoggerGetRegistryKeyPath(Key, RegPath);
-        LastError = LOG(WINTUN_LOG_ERR, L"Failed to get %.*s\\*IfType", MAX_REG_PATH, RegPath);
-        goto cleanupKey;
-    }
-
-    Adapter->InterfaceFilename = AdapterGetDeviceObjectFileName(Adapter->DevInstanceID);
-    if (!Adapter->InterfaceFilename)
-    {
-        LastError = LOG_LAST_ERROR(L"Unable to determine device object file name");
-        goto cleanupKey;
-    }
-
-cleanupKey:
-    RegCloseKey(Key);
-    return RET_ERROR(TRUE, LastError);
-}
+#include "adapter_data.h"
 
 #include "cleanup.h"
+#include "orphan_cleanup.h"
 static VOID CleanupRun(VOID)
 {
     if (!MainRuntimeAcquire()) return;
@@ -118,7 +60,7 @@ static VOID CleanupRun(VOID)
     if (!LegacyDone) {
         HANDLE mutex = NamespaceTakeDeviceInstallationMutexCancelable(CleanupStop);
         if (!mutex) goto done;
-        AdapterCleanupLegacyDevices(); LegacyDone = TRUE;
+        LegacyDone = AdapterCleanupLegacyDevices();
         NamespaceReleaseMutex(mutex);
     }
     AdapterCleanupOrphanedDevices();
@@ -150,65 +92,6 @@ static VOID QueueUpOrphanedDeviceCleanupRoutine(VOID)
     SetLastError(error);
 }
 
-VOID AdapterCleanupOrphanedDevices(VOID)
-{
-    HANDLE DeviceInstallationMutex = NamespaceTakeDeviceInstallationMutexCancelable(CleanupStop);
-    if (!DeviceInstallationMutex)
-    {
-        LOG_LAST_ERROR(L"Failed to take device installation mutex");
-        return;
-    }
-
-    if (IsWindows7)
-    {
-        AdapterCleanupOrphanedDevicesWin7();
-        goto cleanupDeviceInstallationMutex;
-    }
-
-    HDEVINFO DevInfo = SetupDiGetClassDevsExW(&GUID_DEVCLASS_NET, WINTUN_ENUMERATOR, NULL, 0, NULL, NULL, NULL);
-    if (DevInfo == INVALID_HANDLE_VALUE)
-    {
-        LOG_LAST_ERROR(L"Failed to get adapters");
-        goto cleanupDeviceInstallationMutex;
-    }
-
-    SP_DEVINFO_DATA DevInfoData = { .cbSize = sizeof(DevInfoData) };
-    for (DWORD EnumIndex = 0;; ++EnumIndex)
-    {
-        if (AdapterCleanupCancelled()) break;
-        if (!SetupDiEnumDeviceInfo(DevInfo, EnumIndex, &DevInfoData))
-        {
-            if (GetLastError() == ERROR_NO_MORE_ITEMS)
-                break;
-            continue;
-        }
-        ULONG Status, Code;
-        if (CM_Get_DevNode_Status(&Status, &Code, DevInfoData.DevInst, 0) == CR_SUCCESS && !(Status & DN_HAS_PROBLEM))
-            continue;
-
-        DEVPROPTYPE PropType;
-        WCHAR Name[MAX_ADAPTER_NAME] = L"<unknown>";
-        SetupDiGetDevicePropertyW(
-            DevInfo,
-            &DevInfoData,
-            &DEVPKEY_Wintun_Name,
-            &PropType,
-            (PBYTE)Name,
-            MAX_ADAPTER_NAME * sizeof(Name[0]),
-            NULL,
-            0);
-        if (!AdapterRemoveInstance(DevInfo, &DevInfoData))
-        {
-            LOG_LAST_ERROR(L"Failed to remove orphaned adapter \"%s\"", Name);
-            continue;
-        }
-        LOG(WINTUN_LOG_INFO, L"Removed orphaned adapter \"%s\"", Name);
-    }
-    SetupDiDestroyDeviceInfoList(DevInfo);
-cleanupDeviceInstallationMutex:
-    NamespaceReleaseMutex(DeviceInstallationMutex);
-}
-
 _Use_decl_annotations_
 VOID WINAPI
 WintunCloseAdapter(WINTUN_ADAPTER *Adapter)
@@ -230,139 +113,7 @@ WintunCloseAdapter(WINTUN_ADAPTER *Adapter)
     if (runtimeOwned) MainRuntimeRelease();
 }
 
-static _Return_type_success_(return != FALSE)
-BOOL
-RenameByNetGUID(_In_ GUID *Guid, _In_reads_or_z_(MAX_ADAPTER_NAME) LPCWSTR Name)
-{
-    DWORD LastError = ERROR_NOT_FOUND;
-    HDEVINFO DevInfo = SetupDiGetClassDevsExW(&GUID_DEVCLASS_NET, WINTUN_ENUMERATOR, NULL, 0, NULL, NULL, NULL);
-    if (DevInfo == INVALID_HANDLE_VALUE)
-    {
-        LastError = GetLastError();
-        goto cleanup;
-    }
-
-    SP_DEVINFO_DATA DevInfoData = { .cbSize = sizeof(DevInfoData) };
-    for (DWORD EnumIndex = 0;; ++EnumIndex)
-    {
-        if (!MainOperationSleep(0)) { LastError = GetLastError(); break; }
-        if (!SetupDiEnumDeviceInfo(DevInfo, EnumIndex, &DevInfoData))
-        {
-            if (GetLastError() == ERROR_NO_MORE_ITEMS)
-                break;
-            continue;
-        }
-
-        HKEY Key = SetupDiOpenDevRegKey(DevInfo, &DevInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_QUERY_VALUE);
-        if (Key == INVALID_HANDLE_VALUE)
-            continue;
-        LPWSTR ValueStr = RegistryQueryString(Key, L"NetCfgInstanceId", TRUE);
-        RegCloseKey(Key);
-        if (!ValueStr)
-            continue;
-        GUID Guid2;
-        HRESULT HRet = CLSIDFromString(ValueStr, &Guid2);
-        Free(ValueStr);
-        if (FAILED(HRet) || memcmp(Guid, &Guid2, sizeof(*Guid)))
-            continue;
-        LastError = SetupDiSetDevicePropertyW(
-                        DevInfo,
-                        &DevInfoData,
-                        &DEVPKEY_Wintun_Name,
-                        DEVPROP_TYPE_STRING,
-                        (PBYTE)Name,
-                        (DWORD)((wcslen(Name) + 1) * sizeof(Name[0])),
-                        0)
-                        ? ERROR_SUCCESS
-                        : GetLastError();
-        break;
-    }
-    SetupDiDestroyDeviceInfoList(DevInfo);
-cleanup:
-    return RET_ERROR(TRUE, LastError);
-}
-
-_Must_inspect_result_
-static _Return_type_success_(return != FALSE)
-BOOL
-ConvertInterfaceAliasToGuid(_In_z_ LPCWSTR Name, _Out_ GUID *Guid)
-{
-    NET_LUID Luid;
-    DWORD LastError = ConvertInterfaceAliasToLuid(Name, &Luid);
-    if (LastError != NO_ERROR)
-    {
-        SetLastError(LOG_ERROR(LastError, L"Failed convert interface %s name to the locally unique identifier", Name));
-        return FALSE;
-    }
-    LastError = ConvertInterfaceLuidToGuid(&Luid, Guid);
-    if (LastError != NO_ERROR)
-    {
-        SetLastError(LOG_ERROR(LastError, L"Failed to convert interface %s LUID (%I64u) to GUID", Name, Luid.Value));
-        return FALSE;
-    }
-    return TRUE;
-}
-
-static _Return_type_success_(return != FALSE)
-BOOL
-NciSetAdapterName(_In_ GUID *Guid, _In_reads_or_z_(MAX_ADAPTER_NAME) LPCWSTR Name)
-{
-    const int MaxSuffix = 1000;
-    WCHAR AvailableName[MAX_ADAPTER_NAME];
-    if (wcsncpy_s(AvailableName, _countof(AvailableName), Name, _TRUNCATE) == STRUNCATE)
-    {
-        SetLastError(ERROR_BUFFER_OVERFLOW);
-        return FALSE;
-    }
-    for (int i = 0;; ++i)
-    {
-        if (!MainOperationSleep(0)) return FALSE;
-        DWORD LastError = NciSetConnectionName(Guid, AvailableName);
-        if (LastError == ERROR_DUP_NAME)
-        {
-            GUID Guid2;
-            if (ConvertInterfaceAliasToGuid(AvailableName, &Guid2))
-            {
-                for (int j = 0; j < MaxSuffix; ++j)
-                {
-                    WCHAR Proposal[MAX_ADAPTER_NAME];
-                    if (_snwprintf_s(Proposal, _countof(Proposal), _TRUNCATE, L"%s %d", Name, j + 1) == -1)
-                    {
-                        SetLastError(ERROR_BUFFER_OVERFLOW);
-                        return FALSE;
-                    }
-                    if (_wcsnicmp(Proposal, AvailableName, MAX_ADAPTER_NAME) == 0)
-                        continue;
-                    DWORD LastError2 = NciSetConnectionName(&Guid2, Proposal);
-                    if (LastError2 == ERROR_DUP_NAME)
-                        continue;
-                    if (!RenameByNetGUID(&Guid2, Proposal))
-                        LOG_LAST_ERROR(L"Failed to set foreign adapter name to \"%s\"", Proposal);
-                    if (LastError2 == ERROR_SUCCESS)
-                    {
-                        LastError = NciSetConnectionName(Guid, AvailableName);
-                        if (LastError == ERROR_SUCCESS)
-                            break;
-                    }
-                    break;
-                }
-            }
-        }
-        if (LastError == ERROR_SUCCESS)
-            break;
-        if (i >= MaxSuffix || LastError != ERROR_DUP_NAME)
-        {
-            SetLastError(LastError);
-            return FALSE;
-        }
-        if (_snwprintf_s(AvailableName, _countof(AvailableName), _TRUNCATE, L"%s %d", Name, i + 1) == -1)
-        {
-            SetLastError(ERROR_BUFFER_OVERFLOW);
-            return FALSE;
-        }
-    }
-    return TRUE;
-}
+#include "adapter_rename.h"
 
 _Use_decl_annotations_
 VOID WINAPI
@@ -390,49 +141,7 @@ AdapterOpenDeviceObject(const WINTUN_ADAPTER *Adapter)
     return Handle;
 }
 
-_Use_decl_annotations_
-LPWSTR
-AdapterGetDeviceObjectFileName(LPCWSTR InstanceId)
-{
-    ULONG InterfacesLen;
-    DWORD LastError = CM_MapCrToWin32Err(
-        CM_Get_Device_Interface_List_SizeW(
-            &InterfacesLen,
-            (GUID *)&GUID_DEVINTERFACE_NET,
-            (DEVINSTID_W)InstanceId,
-            CM_GET_DEVICE_INTERFACE_LIST_PRESENT),
-        ERROR_GEN_FAILURE);
-    if (LastError != ERROR_SUCCESS)
-    {
-        SetLastError(LOG_ERROR(LastError, L"Failed to query adapter %s associated instances size", InstanceId));
-        return NULL;
-    }
-    LPWSTR Interfaces = AllocArray(InterfacesLen, sizeof(*Interfaces));
-    if (!Interfaces)
-        return NULL;
-    LastError = CM_MapCrToWin32Err(
-        CM_Get_Device_Interface_ListW(
-            (GUID *)&GUID_DEVINTERFACE_NET,
-            (DEVINSTID_W)InstanceId,
-            Interfaces,
-            InterfacesLen,
-            CM_GET_DEVICE_INTERFACE_LIST_PRESENT),
-        ERROR_GEN_FAILURE);
-    if (LastError != ERROR_SUCCESS)
-    {
-        LOG_ERROR(LastError, L"Failed to get adapter %s associated instances", InstanceId);
-        Free(Interfaces);
-        SetLastError(LastError);
-        return NULL;
-    }
-    if (!Interfaces[0])
-    {
-        Free(Interfaces);
-        SetLastError(ERROR_DEVICE_NOT_AVAILABLE);
-        return NULL;
-    }
-    return Interfaces;
-}
+#include "adapter_discovery.h"
 
 typedef struct _WAIT_FOR_INTERFACE_CTX
 {
@@ -583,7 +292,7 @@ CreateAdapterInternal(LPCWSTR Name, LPCWSTR TunnelType, const GUID *RequestedGUI
     }
     MainRuntimeRetain(); Adapter->RuntimeOwned = TRUE;
 
-    WCHAR TunnelTypeName[MAX_ADAPTER_NAME + 8];
+    WCHAR TunnelTypeName[PB_MAX_ADAPTER_NAME + 8];
     if (_snwprintf_s(TunnelTypeName, _countof(TunnelTypeName), _TRUNCATE, L"%s Tunnel", TunnelType) == -1)
     {
         LastError = ERROR_BUFFER_OVERFLOW;
@@ -883,20 +592,22 @@ OpenAdapterInternal(LPCWSTR Name)
         if (!MainOperationSleep(0)) { LastError = GetLastError(); goto cleanupDevInfo; }
         if (!SetupDiEnumDeviceInfo(DevInfo, EnumIndex, &DevInfoData))
         {
-            if (GetLastError() == ERROR_NO_MORE_ITEMS)
+            DWORD Error = GetLastError();
+            if (Error == ERROR_NO_MORE_ITEMS)
                 break;
-            continue;
+            LastError = LOG_ERROR(Error ? Error : ERROR_GEN_FAILURE, L"Failed to enumerate adapters");
+            goto cleanupDevInfo;
         }
 
         DEVPROPTYPE PropType;
-        WCHAR OtherName[MAX_ADAPTER_NAME];
+        WCHAR OtherName[PB_MAX_ADAPTER_NAME];
         Found = SetupDiGetDevicePropertyW(
                     DevInfo,
                     &DevInfoData,
                     &DEVPKEY_Wintun_Name,
                     &PropType,
                     (PBYTE)OtherName,
-                    MAX_ADAPTER_NAME * sizeof(OtherName[0]),
+                    PB_MAX_ADAPTER_NAME * sizeof(OtherName[0]),
                     NULL,
                     0) &&
                 PropType == DEVPROP_TYPE_STRING && !_wcsicmp(Name, OtherName);
@@ -939,7 +650,7 @@ cleanup:
 }
 
 typedef struct ADAPTER_OPERATION_INPUT {
-    WCHAR Name[MAX_ADAPTER_NAME], TunnelType[MAX_ADAPTER_NAME];
+    WCHAR Name[PB_MAX_ADAPTER_NAME], TunnelType[PB_MAX_ADAPTER_NAME];
     GUID RequestedGUID;
     BOOL Create, HasGUID;
 } ADAPTER_OPERATION_INPUT;
@@ -950,12 +661,7 @@ static ULONG_PTR RunAdapterOperation(const VOID *opaque)
         input->HasGUID ? &input->RequestedGUID : NULL) : OpenAdapterInternal(input->Name));
 }
 static VOID DisposeAdapterOperation(ULONG_PTR result) { WintunCloseAdapter((WINTUN_ADAPTER *)result); }
-static BOOL CopyOperationName(WCHAR *destination, LPCWSTR source)
-{
-    SIZE_T length = source ? wcsnlen_s(source, MAX_ADAPTER_NAME) : 0;
-    if (!length || length >= MAX_ADAPTER_NAME) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    memcpy(destination, source, (length + 1) * sizeof(WCHAR)); return TRUE;
-}
+#include "adapter_name.h"
 _Use_decl_annotations_
 WINTUN_ADAPTER_HANDLE WINAPI WintunCreateAdapter(LPCWSTR name, LPCWSTR tunnelType, const GUID *requestedGUID)
 {

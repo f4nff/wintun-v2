@@ -2,6 +2,7 @@
 /* Included after TUN_CTX, NdisVersion and the NBL helpers in wintun.c. */
 #pragma once
 #include "../../common/offload_policy.h"
+#include "../../common/platform.h"
 #define PB_ETH_ENCAPS (NDIS_ENCAPSULATION_IEEE_802_3 | NDIS_ENCAPSULATION_IEEE_802_3_P_AND_Q)
 #include "indication_gate.h"
 #include "ndis_callouts.h"
@@ -12,61 +13,10 @@
 static ULONG PbEffectiveMask(TUN_CTX *ctx)
 {
     return PbResolveOffloads((ULONG)ReadAcquire(&ctx->Probe.AllowedMask), (ULONG)ReadAcquire(&ctx->Probe.NdisMask),
-        (ULONG)ReadAcquire(&ctx->Probe.EncapsulationMask), ReadAcquire(&ctx->Probe.V2SessionActive));
+        (ULONG)ReadAcquire(&ctx->Probe.EncapsulationMask), ReadAcquire(&ctx->Probe.V2SessionActive)) & PbPlatformOffloads(NdisVersion);
 }
 
-static VOID PbMakeOffload(ULONG mask, NDIS_OFFLOAD *offload)
-{
-    RtlZeroMemory(offload, sizeof(*offload));
-    offload->Header.Type = NDIS_OBJECT_TYPE_OFFLOAD;
-    offload->Header.Revision = NDIS_OFFLOAD_REVISION_8;
-    offload->Header.Size = NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_8;
-    offload->Checksum.IPv4Transmit.Encapsulation = PB_ETH_ENCAPS;
-    offload->Checksum.IPv4Transmit.IpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
-    offload->Checksum.IPv4Transmit.TcpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
-    offload->Checksum.IPv4Transmit.IpChecksum = !!(mask & PB_TX_IP4_CHECKSUM);
-    offload->Checksum.IPv4Transmit.TcpChecksum = !!(mask & PB_TX_TCP4_CHECKSUM);
-    offload->Checksum.IPv4Transmit.UdpChecksum = !!(mask & PB_TX_UDP4_CHECKSUM);
-    offload->Checksum.IPv6Transmit.Encapsulation = PB_ETH_ENCAPS;
-    offload->Checksum.IPv6Transmit.IpExtensionHeadersSupported = NDIS_OFFLOAD_SUPPORTED;
-    offload->Checksum.IPv6Transmit.TcpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
-    offload->Checksum.IPv6Transmit.TcpChecksum = !!(mask & PB_TX_TCP6_CHECKSUM);
-    offload->Checksum.IPv6Transmit.UdpChecksum = !!(mask & PB_TX_UDP6_CHECKSUM);
-    offload->Checksum.IPv4Receive.Encapsulation = PB_ETH_ENCAPS;
-    offload->Checksum.IPv4Receive.IpChecksum = !!(mask & PB_RX_IP4_CHECKSUM);
-    offload->Checksum.IPv4Receive.TcpChecksum = !!(mask & PB_RX_TCP4_CHECKSUM);
-    offload->Checksum.IPv4Receive.UdpChecksum = !!(mask & PB_RX_UDP4_CHECKSUM);
-    offload->Checksum.IPv6Receive.Encapsulation = PB_ETH_ENCAPS;
-    offload->Checksum.IPv6Receive.TcpChecksum = !!(mask & PB_RX_TCP6_CHECKSUM);
-    offload->Checksum.IPv6Receive.UdpChecksum = !!(mask & PB_RX_UDP6_CHECKSUM);
-    offload->Rsc.IPv4.Enabled = !!(mask & PB_RX_RSC4);
-    offload->Rsc.IPv6.Enabled = !!(mask & PB_RX_RSC6);
-    offload->UdpRsc.Enabled = !!(mask & PB_RX_URO);
-    if (mask & PB_TX_LSO4) {
-        offload->LsoV2.IPv4.Encapsulation = PB_ETH_ENCAPS;
-        offload->LsoV2.IPv4.MaxOffLoadSize = 32768;
-        offload->LsoV2.IPv4.MinSegmentCount = 2;
-    }
-    if (mask & PB_TX_LSO6) {
-        offload->LsoV2.IPv6.Encapsulation = PB_ETH_ENCAPS;
-        offload->LsoV2.IPv6.MaxOffLoadSize = 32768;
-        offload->LsoV2.IPv6.MinSegmentCount = 2;
-        offload->LsoV2.IPv6.IpExtensionHeadersSupported = NDIS_OFFLOAD_SUPPORTED;
-        offload->LsoV2.IPv6.TcpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
-    }
-    if (mask & PB_TX_USO4) {
-        offload->UdpSegmentation.IPv4.Encapsulation = PB_ETH_ENCAPS;
-        offload->UdpSegmentation.IPv4.MaxOffLoadSize = 32768;
-        offload->UdpSegmentation.IPv4.MinSegmentCount = 2;
-        offload->UdpSegmentation.IPv4.SubMssFinalSegmentSupported = TRUE;
-    }
-    if (mask & PB_TX_USO6) {
-        offload->UdpSegmentation.IPv6.Encapsulation = PB_ETH_ENCAPS;
-        offload->UdpSegmentation.IPv6.MaxOffLoadSize = 32768;
-        offload->UdpSegmentation.IPv6.MinSegmentCount = 2;
-        offload->UdpSegmentation.IPv6.SubMssFinalSegmentSupported = TRUE;
-    }
-}
+#include "offload_format.h"
 
 static NDIS_STATUS PbRegisterOffload(TUN_CTX *ctx)
 {
@@ -74,9 +24,9 @@ static NDIS_STATUS PbRegisterOffload(TUN_CTX *ctx)
     NDIS_TCP_CONNECTION_OFFLOAD connection = { .Header = {
         .Type = NDIS_OBJECT_TYPE_DEFAULT, .Revision = NDIS_TCP_CONNECTION_OFFLOAD_REVISION_1,
         .Size = NDIS_SIZEOF_TCP_CONNECTION_OFFLOAD_REVISION_1 } };
-    PbMakeOffload(PB_PROBE_SUPPORTED, &hardware);
-    PbMakeOffload(0, &current);
-    ctx->Probe.NdisMask = PB_PROBE_SUPPORTED;
+    PbMakeOffloadForVersion(NdisVersion, PbPlatformOffloads(NdisVersion), &hardware);
+    PbMakeOffloadForVersion(NdisVersion, 0, &current);
+    ctx->Probe.NdisMask = PbPlatformOffloads(NdisVersion);
     ctx->Probe.EncapsulationMask = 0;
     /* Explicit opt-in via the diagnostic IOCTL; the initial data path stays plain. */
     ctx->Probe.AllowedMask = 0;
@@ -98,12 +48,12 @@ static VOID PbReportOffload(TUN_CTX *ctx)
     KeAcquireInStackQueuedSpinLock(&ctx->Probe.StatusLock, &reportLock);
     NDIS_OFFLOAD current;
     KIRQL irql = ExAcquireSpinLockShared(&ctx->TransitionLock);
-    PbMakeOffload(PbEffectiveMask(ctx), &current);
+    PbMakeOffloadForVersion(NdisVersion, PbEffectiveMask(ctx), &current);
     ExReleaseSpinLockShared(&ctx->TransitionLock, irql);
     NDIS_STATUS_INDICATION indication = { .Header = { .Type = NDIS_OBJECT_TYPE_STATUS_INDICATION,
         .Revision = NDIS_STATUS_INDICATION_REVISION_1, .Size = NDIS_SIZEOF_STATUS_INDICATION_REVISION_1 },
         .SourceHandle = ctx->MiniportAdapterHandle, .StatusCode = NDIS_STATUS_TASK_OFFLOAD_CURRENT_CONFIG,
-        .StatusBuffer = &current, .StatusBufferSize = sizeof(current) };
+        .StatusBuffer = &current, .StatusBufferSize = current.Header.Size };
     NdisMIndicateStatusEx(ctx->MiniportAdapterHandle, &indication);
     KeReleaseInStackQueuedSpinLock(&reportLock);
 }
@@ -130,14 +80,15 @@ static NDIS_STATUS PbSetOffloadParameters(TUN_CTX *ctx, NDIS_OID_REQUEST *reques
     if (ctx->Probe.RegistrationStatus != NDIS_STATUS_SUCCESS) return NDIS_STATUS_NOT_SUPPORTED;
     if (size < NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_1 || p->Header.Size > size ||
         p->Header.Size < NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_1 || p->Header.Type != NDIS_OBJECT_TYPE_DEFAULT ||
-        p->Header.Revision < NDIS_OFFLOAD_PARAMETERS_REVISION_1 || p->Header.Revision > NDIS_OFFLOAD_PARAMETERS_REVISION_6)
+        p->Header.Revision < NDIS_OFFLOAD_PARAMETERS_REVISION_1 || p->Header.Revision > PbPlatformParameterRevision(NdisVersion))
         return NDIS_STATUS_INVALID_LENGTH;
     static const USHORT sizes[] = { 0, NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_1,
         NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_2, NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_3,
         NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_4, NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_5,
         NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_6 };
     if (p->Header.Size != sizes[p->Header.Revision]) return NDIS_STATUS_INVALID_LENGTH;
-    if (p->Flags & ~NDIS_OFFLOAD_PARAMETERS_SKIP_REGISTRY_UPDATE) return NDIS_STATUS_NOT_SUPPORTED;
+    if ((p->Flags & ~NDIS_OFFLOAD_PARAMETERS_SKIP_REGISTRY_UPDATE) ||
+        (p->Flags && NdisVersion < PB_NDIS_VERSION(30))) return NDIS_STATUS_NOT_SUPPORTED;
     if (!PbChecksumParameter(p->IPv4Checksum, PB_TX_IP4_CHECKSUM, PB_RX_IP4_CHECKSUM, &mask) ||
         !PbChecksumParameter(p->TCPIPv4Checksum, PB_TX_TCP4_CHECKSUM, PB_RX_TCP4_CHECKSUM, &mask) ||
         !PbChecksumParameter(p->UDPIPv4Checksum, PB_TX_UDP4_CHECKSUM, PB_RX_UDP4_CHECKSUM, &mask) ||
@@ -166,6 +117,7 @@ static NDIS_STATUS PbSetOffloadParameters(TUN_CTX *ctx, NDIS_OID_REQUEST *reques
     if (p->Header.Size >= NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_6 &&
         !PbUpdateParameter(p->UdpRsc.Enabled, PB_RX_URO, &mask))
         return NDIS_STATUS_NOT_SUPPORTED;
+    if (mask & ~PbPlatformOffloads(NdisVersion)) return NDIS_STATUS_NOT_SUPPORTED;
     ExAcquireFastMutex(&ctx->Probe.OffloadMutex);
     KIRQL irql = ExAcquireSpinLockExclusive(&ctx->TransitionLock);
     WriteRelease(&ctx->Probe.NdisMask, (LONG)mask);
@@ -239,7 +191,7 @@ static NTSTATUS PbProbeIoctl(TUN_CTX *ctx, IRP *irp, ULONG code)
         status.Size = sizeof(status); status.Magic = PB_PROBE_MAGIC; status.Schema = PB_PROBE_SCHEMA;
         status.FileVersion = PB_VERSION_PACKED; status.NdisVersion = NdisVersion; status.Medium = NdisMedium802_3;
         status.DataAbi = PB_ABI_MAJOR;
-        status.ImplementedMask = PB_PROBE_SUPPORTED;
+        status.ImplementedMask = PbPlatformOffloads(NdisVersion);
         KIRQL irql = ExAcquireSpinLockShared(&ctx->TransitionLock);
         status.AllowedMask = (ULONG)ReadAcquire(&ctx->Probe.AllowedMask);
         status.NdisMask = (ULONG)ReadAcquire(&ctx->Probe.NdisMask);
@@ -273,7 +225,8 @@ static NTSTATUS PbProbeIoctl(TUN_CTX *ctx, IRP *irp, ULONG code)
         if (stack->Parameters.DeviceIoControl.InputBufferLength != sizeof(*policy) ||
             policy->Size != sizeof(*policy) || policy->Schema != PB_PROBE_SCHEMA || policy->Reserved ||
             (policy->AllowedMask & ~PB_PROBE_SUPPORTED)) return STATUS_INVALID_PARAMETER;
-        if (policy->AllowedMask && ctx->Probe.RegistrationStatus != NDIS_STATUS_SUCCESS)
+        if ((policy->AllowedMask & ~PbPlatformOffloads(NdisVersion)) ||
+            (policy->AllowedMask && ctx->Probe.RegistrationStatus != NDIS_STATUS_SUCCESS))
             return STATUS_NOT_SUPPORTED;
         ExAcquireFastMutex(&ctx->Probe.OffloadMutex);
         KIRQL irql = ExAcquireSpinLockExclusive(&ctx->TransitionLock);

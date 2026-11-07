@@ -38,7 +38,7 @@ $legacy = Join-Path $applicationPath 'vpn-client/wintun.dll'
     executable=$executable; executable_profile='debug'; executable_sha256=(Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant();
     legacy_dll_sha256=(Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash.ToLowerInvariant();
     legacy_signature_status=(Get-AuthenticodeSignature -LiteralPath $legacy).Status.ToString();
-    default_offloads=0; runtime_kernel_tested=$false; performance_tested=$false; runtime_fallback='stop then next auto startup uses legacy';
+    default_offloads=0; runtime_kernel_tested=$false; performance_tested=$false; runtime_fallback='Wintun ABI compatibility over the unified v2 driver';
     files=@($files); binding_files=@($vendor.files) } | ConvertTo-Json -Depth 8 |
     Set-Content -LiteralPath (Join-Path $destination 'application-integration.json') -Encoding utf8
 Get-Item -LiteralPath (Join-Path $destination 'application-integration.json') | Select-Object FullName,Length

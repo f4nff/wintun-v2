@@ -163,6 +163,35 @@ class CoalescingTests(unittest.TestCase):
             self.assertEqual(self.start(bytes(data))[2], 2)
             self.assertEqual(self.start(wire(ip, 17, b""))[2], 2)
 
+    def test_32_distinct_tcp_timestamps_remain_individual_without_mutation(self):
+        for ip in (4, 6):
+            first = wire(ip, 6, b"a" * 1000)
+            state, output, status = self.start(first)
+            self.assertEqual(status, 0)
+            saved_state, saved_output = bytes(state), output.raw
+            for i in range(32):
+                with self.subTest(ip=ip, packet=i):
+                    options = b"\x01\x01\x08\x0a" + struct.pack(
+                        "!II", (0xfffffff0 + i) & 0xffffffff, 0x80000000 + i)
+                    header = (20 if ip == 4 else 40) + 32
+                    payload = struct.pack("!IQQ", i, 0x0123456789abcdef,
+                                          0xfedcba9876543210)
+                    payload += bytes([i]) * (1500 - header - len(payload))
+                    candidate = repair(packet(ip, 6, payload, flags=0x10,
+                        seq=(0xfffffff0 + 1000) & 0xffffffff,
+                        tcp_options=options, gso=False))
+                    self.assertEqual(len(candidate), 1500)
+                    self.assertEqual(repair(candidate), candidate)
+                    rejected, untouched, result = self.start(candidate)
+                    self.assertEqual(result, 2)
+                    self.assertEqual(bytes(rejected), bytes(State()))
+                    self.assertEqual(untouched.raw, b"\xa5" * len(untouched))
+                    self.assertEqual(self.append(state, candidate), 2)
+                    self.assertEqual(bytes(state), saved_state)
+                    self.assertEqual(output.raw, saved_output)
+            self.assertEqual(DLL.PbCoalesceFinish(C.byref(state)), 0)
+            self.assertEqual((state.count, output.raw[:state.length]), (1, first))
+
     def test_capacity_segment_count_and_finalize_limits(self):
         source = wire(4, 6, b"x")
         state, output, status = self.start(source, len(source))

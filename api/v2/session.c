@@ -92,35 +92,54 @@ static PB_RESULT Allocate(const PB_CONFIG *config, PB_SESSION **out)
     PB_LAYOUT layout;
     if (!config || !out || config->Size != sizeof(*config) || config->Flags & ~PB_OPEN_KNOWN_FLAGS ||
         config->Offloads & ~PB_PROBE_SUPPORTED || (config->Offloads && !(config->Flags & PB_OPEN_EXPERIMENTAL_OFFLOADS)) ||
-        PbCalculateLayout(config->QueueCount, config->SlotCount, config->RingCapacity, &layout) != PB_OK) return PB_INVALID;
-    if ((config->Flags & PB_OPEN_EXPERIMENTAL_OFFLOADS) && !(config->Flags & PB_OPEN_CHECKED_SEGMENTS)) return PB_UNSUPPORTED;
+        PbCalculateLayout(config->QueueCount, config->SlotCount, config->RingCapacity, &layout) != PB_OK ||
+        layout.RegionSize < sizeof(layout)) { SetLastError(ERROR_INVALID_PARAMETER); return PB_INVALID; }
+    if ((config->Flags & PB_OPEN_EXPERIMENTAL_OFFLOADS) && !(config->Flags & PB_OPEN_CHECKED_SEGMENTS)) {
+        SetLastError(ERROR_NOT_SUPPORTED); return PB_UNSUPPORTED;
+    }
     PB_SESSION *s = calloc(1, sizeof(*s));
-    if (!s) return PB_FULL;
+    if (!s) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return PB_FULL; }
     s->Device = INVALID_HANDLE_VALUE; s->Layout = layout; s->Experimental = !!(config->Flags & PB_OPEN_EXPERIMENTAL_OFFLOADS);
     /* The reservation covers construction as well as published/retained sessions.
      * Destroy owns rollback from this point, including every acquisition failure. */
-    if (!RuntimeAdmit(s)) { free(s); return PB_FULL; }
+    if (!RuntimeAdmit(s)) { free(s); SetLastError(ERROR_NOT_ENOUGH_QUOTA); return PB_FULL; }
+    DWORD error;
     s->ClosingEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (!s->ClosingEvent) { Destroy(s); return PB_FULL; }
+    if (!s->ClosingEvent) goto failedNative;
     s->ProgressEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
-    if (!s->ProgressEvent) { Destroy(s); return PB_FULL; }
-    if (BCryptGenRandom(NULL, (PUCHAR)&s->Epoch, sizeof(s->Epoch), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0 || !s->Epoch) { Destroy(s); return PB_FULL; }
+    if (!s->ProgressEvent) goto failedNative;
+    if (BCryptGenRandom(NULL, (PUCHAR)&s->Epoch, sizeof(s->Epoch), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+        error = ERROR_GEN_FAILURE; goto failed;
+    }
+    if (!s->Epoch) { error = ERROR_INVALID_DATA; goto failed; }
     s->Region = VirtualAlloc(NULL, layout.RegionSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!s->Region) { Destroy(s); return PB_FULL; }
+    if (!s->Region) goto failedNative;
     memcpy(s->Region, &layout, sizeof(layout));
     s->SharedLifecycle = (PB_SHARED_LIFECYCLE *)(s->Region + layout.LifecycleOffset);
     for (uint32_t i = 0; i < layout.QueueCount; ++i) {
         PB_USER_QUEUE *q = s->Queues + i; q->Session = s; q->Index = i;
-        q->KernelEvent = CreateEventW(NULL, FALSE, FALSE, NULL); q->UserEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
-        q->TxSlots = calloc(layout.SlotCount, sizeof(*q->TxSlots)); q->RxSlots = calloc(layout.SlotCount, sizeof(*q->RxSlots));
-        if (!q->KernelEvent || !q->UserEvent || !q->TxSlots || !q->RxSlots) { Destroy(s); return PB_FULL; }
+        q->KernelEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+        if (!q->KernelEvent) goto failedNative;
+        q->UserEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+        if (!q->UserEvent) goto failedNative;
+        q->TxSlots = calloc(layout.SlotCount, sizeof(*q->TxSlots));
+        if (!q->TxSlots) { error = ERROR_NOT_ENOUGH_MEMORY; goto failed; }
+        q->RxSlots = calloc(layout.SlotCount, sizeof(*q->RxSlots));
+        if (!q->RxSlots) { error = ERROR_NOT_ENOUGH_MEMORY; goto failed; }
         PbPoolInitialize(&q->Tx, q->TxSlots, layout.SlotCount, s->Epoch, (uint16_t)i);
         PbPoolInitialize(&q->Rx, q->RxSlots, layout.SlotCount, s->Epoch, (uint16_t)i);
         for (uint32_t r = 0; r < PB_QUEUE_COUNT; ++r)
             PbAttachQueue(&q->Rings[r], s->Region, &layout, i, r, r == PB_QUEUE_TX_RECYCLE || r == PB_QUEUE_RX_SUBMIT);
     }
-    if (!InitializeLifecycle(s)) { Destroy(s); return PB_FULL; }
+    if (!InitializeLifecycle(s)) goto failedNative;
     *out = s; return PB_OK;
+failedNative:
+    error = GetLastError();
+    if (!error) error = ERROR_GEN_FAILURE;
+failed:
+    /* Construction failure must keep its first error through every cleanup.
+     * The old Wintun facade consumes it on this same worker thread. */
+    Destroy(s); SetLastError(error); return PB_FULL;
 }
 
 /* Consumes StartAdapterSession's retained adapter on every outcome. Once a
@@ -133,12 +152,19 @@ static PB_RESULT OpenSession(const wchar_t *path, const PB_CONFIG *config, PB_AD
     if (result != PB_OK) { PbAdapterRelease(adapter); return result; }
     s->Adapter = adapter;
     s->Device = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (s->Device == INVALID_HANDLE_VALUE) { Destroy(s); return PB_UNSUPPORTED; }
+    if (s->Device == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError(); Destroy(s); SetLastError(error); return PB_UNSUPPORTED;
+    }
     PB_PROBE_STATUS status; DWORD returned;
-    if (!DeviceIoControl(s->Device, PB_PROBE_IOCTL_QUERY, NULL, 0, &status, sizeof(status), &returned, NULL) ||
-        returned != sizeof(status) || status.Size != sizeof(status) || status.Magic != PB_PROBE_MAGIC || status.Schema != PB_PROBE_SCHEMA ||
+    if (!DeviceIoControl(s->Device, PB_PROBE_IOCTL_QUERY, NULL, 0, &status, sizeof(status), &returned, NULL)) {
+        DWORD error = GetLastError(); Destroy(s); SetLastError(error); return PB_UNSUPPORTED;
+    }
+    if (returned != sizeof(status) || status.Size != sizeof(status) || status.Magic != PB_PROBE_MAGIC || status.Schema != PB_PROBE_SCHEMA ||
         status.DataAbi != PB_ABI_MAJOR || status.FileVersion != PB_VERSION_PACKED ||
-        memcmp(status.SourceFingerprint, PB_SOURCE_STRING, sizeof(status.SourceFingerprint))) { Destroy(s); return PB_UNSUPPORTED; }
+        sizeof(PB_SOURCE_STRING) != sizeof(status.SourceFingerprint) ||
+        memcmp(status.SourceFingerprint, PB_SOURCE_STRING, sizeof(status.SourceFingerprint))) {
+        Destroy(s); SetLastError(ERROR_REVISION_MISMATCH); return PB_UNSUPPORTED;
+    }
     PB_REGISTER_V2 r = { .Size = sizeof(r), .Major = PB_ABI_MAJOR, .Minor = PB_ABI_MINOR, .Epoch = s->Epoch,
         .RegionAddress = (uint64_t)(uintptr_t)s->Region, .QueueCount = s->Layout.QueueCount, .SlotCount = s->Layout.SlotCount,
         .RingCapacity = s->Layout.RingCapacity, .RegionSize = s->Layout.RegionSize };
@@ -148,8 +174,12 @@ static PB_RESULT OpenSession(const wchar_t *path, const PB_CONFIG *config, PB_AD
         r.KernelEvents[i] = (uint64_t)(uintptr_t)s->Queues[i].KernelEvent;
         r.UserEvents[i] = (uint64_t)(uintptr_t)s->Queues[i].UserEvent;
     }
-    if (!DeviceIoControl(s->Device, PB_V2_IOCTL_REGISTER, &r, sizeof(r), NULL, 0, &returned, NULL)) { Destroy(s); return PB_UNSUPPORTED; }
-    if (config->Offloads && PolicyIo(s, config->Offloads) != PB_OK) { Destroy(s); return PB_UNSUPPORTED; }
+    if (!DeviceIoControl(s->Device, PB_V2_IOCTL_REGISTER, &r, sizeof(r), NULL, 0, &returned, NULL)) {
+        DWORD error = GetLastError(); Destroy(s); SetLastError(error); return PB_UNSUPPORTED;
+    }
+    if (config->Offloads && PolicyIo(s, config->Offloads) != PB_OK) {
+        DWORD error = GetLastError(); Destroy(s); SetLastError(error); return PB_UNSUPPORTED;
+    }
     PublishSession(s); *out = s; return PB_OK;
 }
 static PB_RESULT WINAPI Open(const wchar_t *path, const PB_CONFIG *config, PB_SESSION **out)

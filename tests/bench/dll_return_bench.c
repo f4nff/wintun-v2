@@ -60,11 +60,12 @@ int main(int argc,char **argv)
     DWORD_PTR cpu=allowed&(~allowed+1);CHECK(cpu && SetThreadAffinityMask(GetCurrentThread(),cpu));
     CHECK(PbGetInterfaceV2(2,sizeof(Api),&Api)==PB_OK);
     LARGE_INTEGER frequency;CHECK(QueryPerformanceFrequency(&frequency));
-    const ULONG counts[]={1,2,4,8,16,32};
+    const ULONG counts[]={1,2,4,8,16,32,64};
     const char *patterns[]={"sequential","stride-64","interleaved-64"};
     ULONG patternCount=argc==2 && !strcmp(argv[1],"--slot-patterns")?3:1;
     for(ULONG pattern=0;pattern<patternCount;++pattern) for(ULONG ci=0;ci<sizeof(counts)/sizeof(counts[0]);++ci) {
-        ULONG count=counts[ci];PB_CONFIG config={sizeof(config),1,pattern?452:32,pattern?512:32,0,0};PB_SESSION *s;PB_USER_QUEUE *q;
+        ULONG count=counts[ci],slots=count>32?64:32;
+        PB_CONFIG config={sizeof(config),1,pattern?512:slots,pattern?512:slots,0,0};PB_SESSION *s;PB_USER_QUEUE *q;
         VOID *region;PB_LAYOUT layout;uint64_t epoch;CHECK(PbTestOpen(&config,&s,&region,&layout,&epoch)==PB_OK && Api.OpenQueue(s,0,&q)==PB_OK);
         PB_QUEUE_VIEW ready,recycle,p,c;
         CHECK(PbAttachQueue(&ready,region,&layout,0,PB_QUEUE_TX_READY,1)==PB_OK);
@@ -73,7 +74,8 @@ int main(int argc,char **argv)
         CHECK(PbAttachQueue(&c,region,&layout,0,PB_QUEUE_RX_SUBMIT,0)==PB_OK);
         PB_DESCRIPTOR items[PB_MAX_BATCH]={0};
         for(ULONG i=0;i<count;++i) {
-            ULONG slot=pattern==1?(i&7)*64+(i>>3):pattern==2?(i&3)+(i>>2)*64:i;
+            ULONG slot=pattern==1?(i&7)*64+(i>>3):pattern==2?
+                (count>32?(i&7)+(i>>3)*64:(i&3)+(i>>2)*64):i;
             items[i].Token=(PB_TOKEN){epoch,0,(uint16_t)slot,0};items[i].Length=20;items[i].DataOffset=layout.Queues[0].TxData+slot*PB_BLOCK_SIZE;
         }
         const char *names[]={"producer-cycle","dll-cycle","descriptor-cycle","pending-cycle"};

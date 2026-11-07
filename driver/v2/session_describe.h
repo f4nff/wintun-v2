@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #pragma once
+#include "platform_nbl.h"
 #include "../../include/packetbridge_send_diagnostics.h"
 static __inline NDIS_STATUS PbDescribeFailure(PB_SEND_FAILURE *failure, ULONG reason, NDIS_STATUS status, ULONG packetStatus, ULONG required)
 {
@@ -12,7 +13,7 @@ static NDIS_STATUS PbV2Describe(TUN_CTX *ctx, NET_BUFFER_LIST *nbl, NET_BUFFER *
     if (!length || length > PB_BLOCK_SIZE) return PbDescribeFailure(failure, PB_SEND_LENGTH, NDIS_STATUS_INVALID_LENGTH, 0, 0);
     if (!PbV2Read(nb, ethernetLength, bytes, length)) return PbDescribeFailure(failure, PB_SEND_PAYLOAD_READ, NDIS_STATUS_RESOURCES, 0, 0);
     NDIS_TCP_LARGE_SEND_OFFLOAD_NET_BUFFER_LIST_INFO lso = { .Value = NET_BUFFER_LIST_INFO(nbl, TcpLargeSendNetBufferListInfo) };
-    NDIS_UDP_SEGMENTATION_OFFLOAD_NET_BUFFER_LIST_INFO uso = { .Value = NET_BUFFER_LIST_INFO(nbl, UdpSegmentationOffloadInfo) };
+    NDIS_UDP_SEGMENTATION_OFFLOAD_NET_BUFFER_LIST_INFO uso = { .Value = PB_NBL_GET(nbl, UdpSegmentationOffloadInfo, 83) };
     NDIS_TCP_IP_CHECKSUM_NET_BUFFER_LIST_INFO c = { .Value = NET_BUFFER_LIST_INFO(nbl, TcpIpChecksumNetBufferListInfo) };
     ULONG required = 0;
     d->Length = length;
@@ -43,7 +44,10 @@ static NDIS_STATUS PbV2Describe(TUN_CTX *ctx, NET_BUFFER_LIST *nbl, NET_BUFFER *
         if (!ipLength || ipLength > length || ipLength < (bytes[0] >> 4 == 4 ? 20u : 40u))
             return PbDescribeFailure(failure, PB_SEND_IP_LENGTH, NDIS_STATUS_INVALID_DATA, 0, 0);
         length = d->Length = ipLength;
-        if (c.Transmit.IpHeaderChecksum || c.Transmit.TcpChecksum || c.Transmit.UdpChecksum) {
+        /* NDIS defines no checksum task when neither family is selected.
+         * Only interpret task selectors after that explicit family gate. */
+        if ((c.Transmit.IsIPv4 || c.Transmit.IsIPv6) &&
+            (c.Transmit.IpHeaderChecksum || c.Transmit.TcpChecksum || c.Transmit.UdpChecksum)) {
             ULONG ip = bytes[0] >> 4;
             uint32_t transportOffset = 0;
             if ((ip != 4 && ip != 6) || !!c.Transmit.IsIPv4 != (ip == 4) || !!c.Transmit.IsIPv6 != (ip == 6) ||

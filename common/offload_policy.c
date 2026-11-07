@@ -4,8 +4,9 @@ uint32_t PbResolveOffloads(uint32_t allowed, uint32_t requested, uint32_t encaps
 {
     uint32_t mask = allowed & requested & encapsulation & PB_PROBE_SUPPORTED;
     if (!v2Session) return 0;
-    if ((mask & (PB_TX_IP4_CHECKSUM | PB_TX_TCP4_CHECKSUM)) != (PB_TX_IP4_CHECKSUM | PB_TX_TCP4_CHECKSUM)) mask &= ~PB_TX_LSO4;
-    if (!(mask & PB_TX_TCP6_CHECKSUM)) mask &= ~PB_TX_LSO6;
+    /* LSO calculates checksums for its own segments independently of the
+     * ordinary TX checksum configuration. Its own gates are intersected
+     * above; RX coalescing retains its validation prerequisites below. */
     const uint32_t rsc4 = PB_RX_IP4_CHECKSUM | PB_RX_TCP4_CHECKSUM;
     const uint32_t uro = PB_RX_IP4_CHECKSUM | PB_RX_UDP4_CHECKSUM | PB_RX_UDP6_CHECKSUM;
     if ((mask & rsc4) != rsc4) mask &= ~PB_RX_RSC4;

@@ -1,4 +1,4 @@
-param([ValidateSet('Tests', 'Safety', 'Driver', 'Probe', 'Api', 'FinalApi', 'UnsignedTestApi')][string]$Stage = 'Tests',
+param([ValidateSet('Tests', 'UnifiedTests', 'Safety', 'Driver', 'Probe', 'Api', 'FinalApi', 'UnsignedTestApi')][string]$Stage = 'Tests',
     [string]$SignedDriverDirectory, [string]$ExpectedManifest, [string]$UnsignedDriverDirectory)
 . (Join-Path $PSScriptRoot 'common.ps1')
 trap { if ($script:TestResultFile) { Write-TestRecording 'failed' }; throw }
@@ -11,6 +11,7 @@ New-Item -ItemType Directory -Path $outDir, $objectDir -Force | Out-Null
 
 if ($Stage -eq 'Tests') {
     Start-TestRecording $outDir
+    Invoke-TestTool 'pwsh.exe' @('-NoProfile','-File','tools\audit\verify-source-fingerprint.ps1','-OutputDirectory',"$outDir\source-fingerprint")
     foreach ($resource in @('setupapihost', 'example')) {
         Invoke-BuildTool (Join-Path $script:SdkBin 'rc.exe') (@('/nologo', "/fo$objectDir\$resource.res") + $script:VersionArguments + @("$resource\resources.rc"))
     }
@@ -19,6 +20,18 @@ if ($Stage -eq 'Tests') {
     Invoke-TestTool 'python.exe' @('tests\packet\test_packet.py', "$outDir\pbpacket-tests.dll")
     Invoke-TestTool 'python.exe' @('tests\packet\test_coalesce.py', "$outDir\pbpacket-tests.dll")
     Invoke-TestTool 'python.exe' @('tests\packet\test_ethernet.py', "$outDir\pbpacket-tests.dll")
+    foreach($ipVersion in @(4,6)) {
+        Invoke-TestTool 'python.exe' @('tests\packet\test_packet_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_route_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_segment_edge_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_coalesce_edge_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_max_header_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_coalesce_variable_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_request_alias_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_retry_revalidate_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_coalesce_limit_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_tcp_zero_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+    }
     Invoke-BuildTool (Join-Path $script:SdkBin 'rc.exe') (@('/nologo',"/I$script:RepoRoot\include", "/fo$objectDir\core-tests.res") + $script:VersionArguments + @('tools\build\artifact.rc'))
     Invoke-BuildTool 'cl.exe' (@('/nologo','/std:c17','/MT','/O2','/W4','/WX',"/Fo$objectDir\", 'common\v2_core.c','common\offload_policy.c','tests\model\core_tests.c') + $script:VersionArguments + @('/link',"/out:$outDir\pbcore-tests.exe", "$objectDir\core-tests.res"))
     Invoke-TestTool "$outDir\pbcore-tests.exe" @()
@@ -137,16 +150,25 @@ if ($Stage -eq 'Tests') {
     Invoke-BuildTool 'link.exe' @('/nologo','/dll','/noentry','/machine:x64',"/out:$outDir\pbresource-tests.dll", "$objectDir\resource-fixture.res", "$objectDir\tools.res")
     & (Join-Path $PSScriptRoot '..\package\verify-embedded-driver.ps1') -Dll "$outDir\pbresource-tests.dll" -DriverDirectory $fixtureDir
     Invoke-BuildTool 'cl.exe' (@('/nologo','/LD','/std:c17','/MT','/O2','/W4','/WX','/DPB_API_TESTS=1',"/Fo$objectDir\") + $apiTestSources + $script:VersionArguments + @('/link',"/out:$outDir\pbapi-testshim.dll", '/def:tests\model\api_test_exports.def', "/implib:$objectDir\pbapi-testshim.lib", "$objectDir\tools.res") + $apiTestLibs)
+    foreach($ipVersion in @(4,6)) {
+        Invoke-TestTool 'python.exe' @('tests\packet\test_flow_family32.py', "$outDir\pbpacket-tests.dll", "$outDir\pbapi-testshim.dll", "$ipVersion")
+    }
     $savedTestDll = $env:PB_TEST_DLL
     Invoke-BuildTool 'cl.exe' (@('/nologo','/std:c17','/MT','/O2','/W4','/WX',"/Fo$objectDir\",'tests\safety\lifecycle_unload_tests.c') + $script:VersionArguments + @('/link',"/out:$outDir\pblifecycle-unload-tests.exe", "$objectDir\core-tests.res"))
     Invoke-TestTool "$outDir\pblifecycle-unload-tests.exe" @("$outDir\pbapi-testshim.dll")
     try {
         $env:PB_TEST_DLL = "$outDir\pbapi-testshim.dll"
+        foreach($ipFamily in @('ipv4','ipv6')) {
+            Invoke-TestTool 'cargo.exe' @('test','--manifest-path','rust\Cargo.toml','--workspace','--offline','--features','native-tests',"batch32_${ipFamily}_",'--','--nocapture')
+        }
         Invoke-TestTool 'cargo.exe' @('test','--manifest-path','rust\Cargo.toml','--workspace','--offline','--features','native-tests')
     } finally { $env:PB_TEST_DLL = $savedTestDll }
     if ((Get-Item -LiteralPath "$outDir\pbpacket-tests.dll").VersionInfo.FileVersion -ne $script:Version) { throw 'PE file version mismatch' }
+    Invoke-TestTool 'pwsh.exe' @('-NoProfile','-File','tools\build\unified-tests.ps1')
     Write-TestRecording 'passed'
     Write-ArtifactManifest $outDir 'development-tests' @{ runtime_driver_tested = $false }
+} elseif ($Stage -eq 'UnifiedTests') {
+    . (Join-Path $PSScriptRoot 'unified-tests.ps1')
 } elseif ($Stage -eq 'Safety') {
     . (Join-Path $PSScriptRoot 'safety.ps1')
 } elseif ($Stage -eq 'Driver') {

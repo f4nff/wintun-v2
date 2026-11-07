@@ -10,33 +10,59 @@
 #include <Shlwapi.h>
 #include <NTSecAPI.h>
 
+/* Resource APIs accept both string names and integer identifiers. Keep the
+ * caller's spelling for aliases, and never pass MAKEINTRESOURCE as a string. */
+static LPCWSTR ResourceLogName(LPCWSTR Name, WCHAR NumericName[16])
+{
+    if (!IS_INTRESOURCE(Name)) return Name;
+    swprintf_s(NumericName, 16, L"#%u", (UINT)(ULONG_PTR)Name);
+    return NumericName;
+}
+
+static DWORD ResourceLogFailure(DWORD Error, LPCWSTR Operation, LPCWSTR Name)
+{
+    if (!Error) Error = ERROR_GEN_FAILURE;
+    LOG_ERROR(Error, L"Failed to %s resource %s", Operation, Name);
+    SetLastError(Error); return Error;
+}
+
 _Use_decl_annotations_
 const VOID *
 ResourceGetAddress(LPCWSTR ResourceName, DWORD *Size)
 {
-    HRSRC FoundResource = FindResourceW(ResourceModule, ResourceName, RT_RCDATA);
+    *Size = 0;
+    WCHAR NumericName[16];
+    LPCWSTR DisplayName = ResourceLogName(ResourceName, NumericName);
+    /* Numeric resources are shared by both public APIs; no second SYS copy. */
+    if (!IS_INTRESOURCE(ResourceName)) {
+        if (!wcscmp(ResourceName, L"packetbridge.sys")) ResourceName = MAKEINTRESOURCEW(101);
+        else if (!wcscmp(ResourceName, L"packetbridge.inf")) ResourceName = MAKEINTRESOURCEW(102);
+        else if (!wcscmp(ResourceName, L"packetbridge.cat")) ResourceName = MAKEINTRESOURCEW(103);
+    }
+    HRSRC FoundResource = FindResourceW(ResourceModule, ResourceName, MAKEINTRESOURCEW(10));
     if (!FoundResource)
     {
-        LOG_LAST_ERROR(L"Failed to find resource %s", ResourceName);
+        ResourceLogFailure(GetLastError(), L"find", DisplayName);
         return NULL;
     }
     *Size = SizeofResource(ResourceModule, FoundResource);
     if (!*Size)
     {
-        LOG_LAST_ERROR(L"Failed to query resource %s size", ResourceName);
+        ResourceLogFailure(GetLastError(), L"query size of", DisplayName);
         return NULL;
     }
     HGLOBAL LoadedResource = LoadResource(ResourceModule, FoundResource);
     if (!LoadedResource)
     {
-        LOG_LAST_ERROR(L"Failed to load resource %s", ResourceName);
+        ResourceLogFailure(GetLastError(), L"load", DisplayName);
+        *Size = 0;
         return NULL;
     }
     BYTE *Address = LockResource(LoadedResource);
     if (!Address)
     {
-        LOG(WINTUN_LOG_ERR, L"Failed to lock resource %s", ResourceName);
-        SetLastError(ERROR_LOCK_FAILED);
+        ResourceLogFailure(ERROR_LOCK_FAILED, L"lock", DisplayName);
+        *Size = 0;
         return NULL;
     }
     return Address;
@@ -50,7 +76,10 @@ ResourceCopyToFile(LPCWSTR DestinationPath, LPCWSTR ResourceName)
     const VOID *LockedResource = ResourceGetAddress(ResourceName, &SizeResource);
     if (!LockedResource)
     {
-        LOG(WINTUN_LOG_ERR, L"Failed to locate resource %s", ResourceName);
+        DWORD Error = GetLastError();
+        WCHAR NumericName[16];
+        LPCWSTR DisplayName = ResourceLogName(ResourceName, NumericName);
+        ResourceLogFailure(Error, L"locate", DisplayName);
         return FALSE;
     }
     HANDLE DestinationHandle = CreateFileW(
@@ -63,7 +92,8 @@ ResourceCopyToFile(LPCWSTR DestinationPath, LPCWSTR ResourceName)
         NULL);
     if (DestinationHandle == INVALID_HANDLE_VALUE)
     {
-        LOG_LAST_ERROR(L"Failed to create file %s", DestinationPath);
+        DWORD Error = LOG_LAST_ERROR(L"Failed to create file %s", DestinationPath);
+        SetLastError(Error ? Error : ERROR_GEN_FAILURE);
         return FALSE;
     }
     DWORD BytesWritten;
@@ -71,6 +101,7 @@ ResourceCopyToFile(LPCWSTR DestinationPath, LPCWSTR ResourceName)
     if (!WriteFile(DestinationHandle, LockedResource, SizeResource, &BytesWritten, NULL))
     {
         LastError = LOG_LAST_ERROR(L"Failed to write file %s", DestinationPath);
+        if (!LastError) LastError = ERROR_GEN_FAILURE;
         goto cleanupDestinationHandle;
     }
     if (BytesWritten != SizeResource)
@@ -93,10 +124,20 @@ _Return_type_success_(return != FALSE)
 BOOL
 ResourceCreateTemporaryDirectory(_Out_writes_z_(MAX_PATH) LPWSTR RandomTempSubDirectory)
 {
+    /* The caller may clean up a nonempty output after any later failure. Do
+     * not publish a candidate that this invocation did not actually create. */
+    RandomTempSubDirectory[0] = 0;
     WCHAR WindowsDirectory[MAX_PATH];
-    if (!GetWindowsDirectoryW(WindowsDirectory, _countof(WindowsDirectory)))
+    UINT WindowsLength = GetWindowsDirectoryW(WindowsDirectory, _countof(WindowsDirectory));
+    if (!WindowsLength)
     {
-        LOG_LAST_ERROR(L"Failed to get Windows folder");
+        DWORD Error = LOG_LAST_ERROR(L"Failed to get Windows folder");
+        SetLastError(Error ? Error : ERROR_GEN_FAILURE);
+        return FALSE;
+    }
+    if (WindowsLength >= _countof(WindowsDirectory))
+    {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
         return FALSE;
     }
     WCHAR WindowsTempDirectory[MAX_PATH];
@@ -115,15 +156,18 @@ ResourceCreateTemporaryDirectory(_Out_writes_z_(MAX_PATH) LPWSTR RandomTempSubDi
     WCHAR RandomSubDirectory[sizeof(RandomBytes) * 2 + 1];
     for (int i = 0; i < sizeof(RandomBytes); ++i)
         swprintf_s(&RandomSubDirectory[i * 2], 3, L"%02x", RandomBytes[i]);
-    if (!PathCombineW(RandomTempSubDirectory, WindowsTempDirectory, RandomSubDirectory))
+    WCHAR Candidate[MAX_PATH];
+    if (!PathCombineW(Candidate, WindowsTempDirectory, RandomSubDirectory))
     {
         SetLastError(ERROR_BUFFER_OVERFLOW);
         return FALSE;
     }
-    if (!CreateDirectoryW(RandomTempSubDirectory, &SecurityAttributes))
+    if (!CreateDirectoryW(Candidate, &SecurityAttributes))
     {
-        LOG_LAST_ERROR(L"Failed to create temporary folder %s", RandomTempSubDirectory);
+        DWORD Error = LOG_LAST_ERROR(L"Failed to create temporary folder %s", Candidate);
+        SetLastError(Error ? Error : ERROR_GEN_FAILURE);
         return FALSE;
     }
+    wcscpy_s(RandomTempSubDirectory, MAX_PATH, Candidate);
     return TRUE;
 }

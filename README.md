@@ -1,8 +1,8 @@
-# PacketBridge v2：基于 Wintun 的 Windows 三层网络适配器
+# PacketBridge：兼容 Wintun API 的统一 v2 网络驱动
 
-本项目基于 [Wintun 原版](https://git.zx2c4.com/wintun/)开发，在保留旧版 Wintun 源码与接口的同时，新增独立的 PacketBridge v2 驱动、批量多队列数据路径、TCP/UDP 卸载处理、C 接口和 Rust 绑定。面向应用的共享数据仍是 IPv4/IPv6 三层报文。
+本项目基于 [Wintun 原版](https://git.zx2c4.com/wintun/)开发，发布一个兼容 DLL `wintun.dll` 和一套 `packetbridge.sys/inf/cat`。DLL 同时提供旧 `Wintun*` 接口、新批量接口及 Rust 绑定；内核统一使用 v2 数据路径。面向应用的共享数据仍是 IPv4/IPv6 三层报文。
 
-Wintun 最初为 [WireGuard](https://www.wireguard.com/)开发，适合主要在用户态实现网络隧道的应用。本项目的 v2 组件使用独立名称 `packetbridge.dll` / `packetbridge.sys`，需要应用接入新接口。
+Wintun 最初为 [WireGuard](https://www.wireguard.com/)开发，适合主要在用户态实现网络隧道的应用。驱动使用独立 PacketBridgeV2 设备身份；旧应用可以加载新的兼容 DLL，新应用使用同一 DLL 中的 `Pb*` 接口。
 
 ## 与 Wintun 原版的区别
 
@@ -10,10 +10,10 @@ Wintun 最初为 [WireGuard](https://www.wireguard.com/)开发，适合主要在
 
 | 方面 | Wintun 原版 master | 当前项目 |
 | --- | --- | --- |
-| 项目结构 | C 驱动、`wintun.dll`、C 头文件及示例 | 保留原有代码，新增 `driver/v2`、`api/v2`、`common`、`include`、Rust 工作区及构建、验证工具 |
-| 系统目标 | Windows 7、8、8.1、10、11 | 旧版代码保留原有目标；v2 当前仅面向 Windows x64，最低 Windows 11 24H2 / build 26100，使用 NDIS 6.89 |
+| 项目结构 | C 驱动、`wintun.dll`、C 头文件及示例 | 统一 v2 内核、Wintun API 兼容层、共享安装器、Rust 绑定及构建验证工具 |
+| 系统目标 | Windows 7、8、8.1、10、11 | 当前构建为 x64；最低工程目标 Windows 7 SP1，运行时使用 NDIS 6.20–6.89，按能力启用卸载；旧系统实机验收尚未完成 |
 | 驱动前端 | `NdisMediumIP` 三层 TUN | v2 对 NDIS 呈现 Ethernet 802.3，处理必要的 ARP/NDP；DLL/Rust 边界仍交付三层 IP 包 |
-| 部署身份 | `wintun.dll`、`wintun.sys` 和 Wintun 设备身份 | v2 使用 `packetbridge.dll`、`packetbridge.sys`、`packetbridge.inf`、`packetbridge.cat` 及独立服务/设备身份 |
+| 部署身份 | `wintun.dll`、`wintun.sys` 和 Wintun 设备身份 | 单个 `wintun.dll`，一套 `packetbridge.sys/inf/cat`，独立 PacketBridgeV2 服务/设备身份 |
 | 数据组织 | 一组收发字节 ring，逐包申请、发送、接收和释放 | 独立 TX/RX 数据池、描述符与 token；每个队列有 ready、recycle、submit、completion 四条有界队列 |
 | 批处理与并行 | 公开 API 以单包操作为主 | 1–8 个数据队列，批量获取、归还、预留、取消、提交和完成；单批最多 64 个对象 |
 | TCP/UDP 卸载 | 基线未提供本项目的 LSOv2/USO/RSC/URO 路径 | 新增 TCP LSOv2、UDP USO、校验和处理、参考分段器，以及受限规则下的 TCP RSC / UDP URO 合并路径 |
@@ -32,8 +32,84 @@ Wintun 最初为 [WireGuard](https://www.wireguard.com/)开发，适合主要在
 - 当前 LSOv2/USO 宣告的最大卸载大小为 32 KiB。RSC/URO 只处理符合严格规则的相邻报文；不满足条件时走普通包路径。
 - v2 是路由型 IP 适配器。Ethernet 前端及单层内联 802.1Q 解析不等于提供通用二层桥接或 VLAN trunk。
 - 多队列当前按 IP 源/目的地址散列，同一地址对的不同端口不会因此分散到多个队列；增加队列数不保证单流加速。
-- v2 不兼容原版的 ring 注册协议，也不能通过重命名 DLL 替换旧接口。回退到原版时需使用完整匹配的 legacy DLL/SYS 组合，由应用负责切换。
+- 兼容 DLL 保留旧 API 的私有字节 ring、逐包指针、申请顺序、可读事件和错误码，通过单个队列 owner 工作线程接入 v2；SYS 不实现旧 ring 注册协议。官方旧 DLL 不能连接本驱动，已有官方 Wintun 设备也不会被自动接管。
 - 本仓库提供本机数据路径和绑定；隧道协议、加密、路由配置及外层 UDP/QUIC socket 的处理由应用负责。
+
+### 统一兼容方案
+
+最低工程目标为 Windows 7 SP1 x64，尚未宣称完成旧系统签名安装和运行验收。
+基础路径始终使用 v2；RSC 从 NDIS 6.30、USO 从 6.83、URO 从 6.89 开放。
+Windows 11 24H2 保留完整的新卸载能力，仍要求显式启用实验卸载和分段扩展。
+DLL/SYS 均消除了加载阶段对更新系统的必要依赖；结构大小及 NBL 扩展字段按运行时版本处理。
+DLL 的最低系统目标不降低 Rust 应用自身运行时或其他依赖的最低要求。
+
+`UnifiedTests` 覆盖实际 Wintun/v2 适配层的并发、顺序、最大报文、回绕、失败回滚、
+满 ring 关闭、延迟 NDIS 引用和资源计数。`Tests` 自动包含此阶段。
+Api 构建还检查发布 DLL 的全部导出、旧导出序号及重复加载/关闭/卸载。
+实施与验收边界见 [统一方案](docs/unified-driver-plan.md)。
+槽位重用竞态、兼容层批处理、唤醒与回收的复核及重放入口见 [槽位归还审计](docs/slot-reclamation-compat-audit.md)。
+SYS 的 MDL 映射参数、Win7/NX 兼容性和回收预算补充验证见 [MDL 兼容性复核](docs/slot-reclamation-mdl-review.md)。
+依赖卸载期间的停机唤醒、等待失败及八队列并发归还验证见 [并发停机复核](docs/concurrent-stop-wait-review.md)。
+线程/进程终止等待失败后的所有权保持和回收验证见 [终止屏障复核](docs/termination-barrier-review.md)。
+异步管道取消、完成屏障、事件复位和装卸资源计数验证见 [异步 I/O 回收复核](docs/overlapped-drain-review.md)。
+停机等待失败时的退避、Win7 系统依赖加载及资源计数验证见 [等待与加载兼容性复核](docs/wait-loader-compat-review.md)。
+批量输出计数、转交数据区重叠、停机归还和资源保持验证见 [批量输出所有权复核](docs/batch-output-ownership-review.md)。
+拥有者身份、孤立设备误回收、停机取消及旧系统属性边界验证见 [孤立设备回收复核](docs/orphan-owner-reclamation-review.md)。
+首次初始化的事件对发布、失败准入、错误保存与并发停机验证见 [冷启动事件所有权复核](docs/event-initialization-ownership-review.md)。
+命名空间创建/打开竞争的有限重试、显式停止、日志锁边界和失败回收验证见 [命名空间初始化复核](docs/namespace-initialization-reclamation-review.md)。
+普通异步读取的虚假唤醒、复位/完成竞态与双流进度验证见 [管道读取唤醒复核](docs/helper-pump-wake-reclamation-review.md)。
+资源提取失败的安全日志、临时目录所有权和错误回滚验证见 [资源失败回收复核](docs/resource-failure-reclamation-review.md)。
+注销与暂停的退休会话汇合、Win7 就绪判断及注册表字符串边界见 [暂停与兼容性回收复核](docs/pause-unregister-compat-reclamation-review.md)。
+适配器元数据失败、驱动查询缺失见证与错误回滚验证见 [失败状态回收复核](docs/failure-state-reclamation-review.md)。
+辅助模块低内存参数处理、Win7 硬件身份与原生辅助 DLL 验证见 [辅助模块兼容性回收复核](docs/helper-host-compat-reclamation-review.md)。
+接口列表变化的有限重试及 MDL/NBL 守护测试见 [接口发现与回收对象复核](docs/interface-discovery-reclamation-review.md)。
+外层 NBL 回调与 Halt 的寿命屏障及驱动枚举失败验证见 [外层归还与枚举复核](docs/outer-return-enumeration-review.md)。
+实际注册回滚、策略回调尾部交接与名称属性验证见 [注册与回调所有权复核](docs/registration-callback-ownership-review.md)。
+进程退出、旧文件关闭、非零卸载策略和改名失败验证见 [进程所有权与策略复核](docs/process-owner-native-policy-review.md)。
+实际 SYS 终止广播到 DLL 等待的交错及 helper 响应容量边界见 [终止唤醒与响应契约复核](docs/terminal-wake-helper-response-review.md)。
+故障 QUERY、DLL 生命周期与 SYS 回收屏障的组合及 Win7 创建失败资源归还见 [跨层故障回收复核](docs/native-reclaim-win7-create-review.md)。
+实际诊断调用的最后引用交接及打开适配器时的枚举失败见 [诊断最后引用复核](docs/retained-owner-adapter-open-review.md)。
+实际 IOCTL 注册回滚与 Halt、关闭期间状态查询的寿命保护见 [分派与查询寿命复核](docs/dispatch-register-status-lifetime-review.md)。
+旧接口启动错误、兼容层停机交接及 indication 返回屏障见 [启动与暂停边界复核](docs/native-start-facade-pause-review.md)。
+发送完成尾部、未发布会话和统一适配器的资源交接见 [所有权交接复核](docs/send-unpublished-adapter-handoff-review.md)。
+
+实际卸载处理器、多个队列等待者的停机退役及运行时初始化重试见 [等待退役与初始化复核](docs/wait-retirement-runtime-init-review.md)。
+
+在途策略、同步 Drain、停机后迟到发布与控制结果的资源交接见 [停机进度与所有权复核](docs/stop-progress-ownership-review.md)。
+
+后台关闭后的策略等待者、同步控制响应和命名空间清理取消见 [回收与重试所有权复核](docs/retirement-retry-ownership-review.md)。
+
+正常接收背压恢复、Miniport 初始化回滚及参数结构版本边界见 [停机回收与背压复核](docs/stop-reclaim-backpressure-review.md)。
+
+实际 worker 启动回滚、completion 分轮继续通知及日志分配归还见 [归还与停机通知复核](docs/return-stop-notification-review.md)。
+跨 MDL 发送失败的槽位归还、初始策略期间的私有会话及环境探测回退见 [构造与发送失败边界复核](docs/lifetime-edge-reclamation-review.md)。
+Open 返回前的终止通知、控制任务分配期间的 shutdown 及失败回收见 [启动通知与任务预留复核](docs/startup-stop-ownership-review.md)。
+辅助进程收尾错误保存、多队列排空与归还故障交错见 [排空故障与收尾错误复核](docs/drain-fault-error-reclamation-review.md)。
+TCP/UDP 上下行的 32 包批量、载荷复制及 TCP 时间戳边界见 [TUN 32 包路径复核](docs/tun32-packet-path-review.md)。
+32 包在槽位压力、字节预算、合并缓冲区及停止借用边界的验证见 [TUN 预算与停机复核](docs/tun32-budget-stop-review.md)。
+IPv4 / IPv6 独立编译、进程及 TCP/UDP 32 包验收见 [地址族独立复核](docs/ip-family-packet-path-review.md)。
+
+LSO 普通校验和配置解耦、32 包真实卸载请求与终止归还测试见 [LSO 与停机复核](docs/lso-checksum-terminal-review.md)。
+
+继续复核的跨代槽位复用、自然部分预留、校验和地址族门控及协议边界见 [分族归还与唤醒复核](docs/return-wake-family-review.md)。
+
+上下行同时背压、暂停恢复后跨代复用及 32 包合并边界见 [双向背压与暂停恢复复核](docs/duplex-pause-family-review.md)。
+
+多队列排空双屏障、PrepareClose 保留生命周期锁及 32 包分片分类见 [多队列排空复核](docs/multiqueue-drain-review.md)。
+
+终止后的 1/7/24 分批归还、Rust 16+16 分段与描述符重定位见 [终止归还与重定位复核](docs/terminal-retirement-review.md)。
+
+普通 completion 的 Wait 重新武装竞态与最大报文头 32 段边界见 [完成通知与报文头边界复核](docs/completion-arm-review.md)。
+
+双合并缓存再次借出、双向最大包预算与变长 TCP 合并见 [双缓存归还与双向预算复核](docs/coalesce-tail-review.md)。
+
+控制回复混合批次、坏状态回复与 32 段末项别名见 [控制回复与状态拒绝复核](docs/control-status-review.md)。
+
+失败完成后的同代际重复接纳修复、32+32 策略替换及尾段重试见 [接收终结代际与策略复核](docs/admission-policy-review.md)。
+
+回收拒绝后实际 Send、两个 owner 归还通知合并及 32 包合并总长边界见 [回收与归还提示复核](docs/recycle-wait-review.md)。
+
+跨队列零引用交接与 Pause、同槽跨代重用后的终止唤醒及 TCP 零校验和 32 段见 [引用交接与跨代唤醒复核](docs/return-interleave-review.md)。
 
 ### 当前版本
 
@@ -54,8 +130,8 @@ Wintun 最初为 [WireGuard](https://www.wireguard.com/)开发，适合主要在
 
 | 路径 | 用途 |
 | --- | --- |
-| [`driver/wintun.c`](driver/wintun.c)、[`driver/v2/`](driver/v2/) | 驱动入口、按构建条件选择的旧版/v2 路径及 v2 队列、收发、回收和卸载实现 |
-| [`api/`](api/)、[`api/v2/`](api/v2/) | 旧版 Wintun DLL 与新增 PacketBridge DLL |
+| [`driver/wintun.c`](driver/wintun.c)、[`driver/v2/`](driver/v2/) | 驱动入口、统一 v2 路径及队列、收发、回收和卸载实现 |
+| [`api/`](api/)、[`api/v2/`](api/v2/) | Wintun API 兼容层、统一安装器与 v2 API；`api/v2/adapter_unified.c` 为发布用适配器实现 |
 | [`include/`](include/)、[`common/`](common/) | 共享 ABI、诊断结构、队列/池、分段、合并、校验和及以太网处理 |
 | [`rust/packetbridge-sys/`](rust/packetbridge-sys/)、[`rust/packetbridge/`](rust/packetbridge/) | 原始 FFI 与带所有权约束的 Rust 封装 |
 | [`tests/`](tests/)、[`tools/audit/`](tools/audit/) | 离线测试、静态分析、专项验证和宿主基准 |
@@ -79,6 +155,7 @@ Wintun 最初为 [WireGuard](https://www.wireguard.com/)开发，适合主要在
 
 ```powershell
 .\tools\build\build.ps1 -Stage Tests
+.\tools\build\build.ps1 -Stage UnifiedTests
 .\tools\build\build.ps1 -Stage Safety
 .\tools\build\build.ps1 -Stage Driver
 .\tools\build\build.ps1 -Stage Probe
@@ -87,7 +164,7 @@ Wintun 最初为 [WireGuard](https://www.wireguard.com/)开发，适合主要在
 
 默认阶段是 `Tests`。产物写入 `out/packet-path-v2/<产品版本>/<源码指纹前12位>/`，驱动包位于其中的 `driver/`。Tests/Safety 生成各自的实际执行记录；测试结果应读取本次构建的 JSON 和日志。
 
-`Driver` 生成未签名开发驱动。普通 `Api` 生成的 `packetbridge.dll` 不内嵌驱动包，需要目标系统已经安装匹配的私有驱动；构建本身不会安装或加载新驱动。
+`Driver` 生成未签名开发驱动。普通 `Api` 生成的 `wintun.dll` 不内嵌驱动包，需要目标系统已经安装匹配的私有驱动；构建本身不会安装或加载新驱动。
 
 源码指纹包含 Git 跟踪及未忽略的新增文件，**README 和其他文档也参与计算**。修改后要为新的冻结源码重新构建整套组件；不能将修改前的签名输入或 DLL/SYS 与新指纹混用。
 
@@ -112,7 +189,7 @@ $signingManifest = 'D:\signing-input\signing-input.json'
 
 另有 `UnsignedTestApi` 阶段，通过 `-UnsignedDriverDirectory` 和 `-ExpectedManifest` 接收经哈希校验的未签名开发包，仅用于专门的测试环境。它不具备 `FinalApi` 的内核签名验证。
 
-内嵌 DLL 创建适配器时暂存驱动包，并检查实际绑定驱动的版本、ABI 和完整源码指纹。特定初始化失败会按配置的适配器名称定位设备及其实际绑定的 OEM INF，执行一次卸载重装后重试；同名设备可能包含旧 Wintun 适配器，名称应由应用明确管理。失败后返回原始诊断，不在 DLL 内自动切换到旧版 Wintun。恢复范围和诊断字段见[安装恢复说明](docs/native-install-recovery.md)。
+内嵌 DLL 创建适配器时暂存驱动包，并检查实际绑定驱动的版本、ABI 和完整源码指纹。新旧 API 共用下兼容的安装器，只管理 PacketBridgeV2 设备。失败保留 Windows 错误及诊断；旧版按名称删除其他设备的恢复路线不再用于发布构建。接口协商和会话打开仍检查版本、ABI、完整源码指纹。
 
 ## v2 接入方式
 
@@ -123,7 +200,7 @@ $signingManifest = 'D:\signing-input\signing-input.json'
 - **HostTx**：Windows 协议栈 → 驱动 → 用户态，应用通过 `ReceiveBatch` 获取，通过 `ReleaseBatch` 归还。
 - **HostRx**：用户态 → 驱动 → Windows 协议栈，应用通过 `ReserveBatch` 预留、`CommitBatch` 提交，再用 `PollCompletions` 获取完成；未发布的 lease 可以取消。
 
-C 调用者加载 `packetbridge.dll`，取得 `PbGetInterfaceV2` 并协商函数表大小和主版本；同时按需协商 `PbGetLifecycleInterface` 和 `PbGetPacketInterface`。定义分别见 [`packetbridge.h`](api/v2/packetbridge.h) 与 [`lifecycle.h`](api/v2/lifecycle.h)。创建适配器的结构化诊断入口为 `PbCreateAdapterEx` / `PbCreateAdapterEx2`。
+C 调用者加载 `wintun.dll`，取得 `PbGetInterfaceV2` 并协商函数表大小和主版本；同时按需协商 `PbGetLifecycleInterface` 和 `PbGetPacketInterface`。定义分别见 [`packetbridge.h`](api/v2/packetbridge.h) 与 [`lifecycle.h`](api/v2/lifecycle.h)。创建适配器的结构化诊断入口为 `PbCreateAdapterEx` / `PbCreateAdapterEx2`。
 
 | 操作 | 函数表接口 |
 | --- | --- |
@@ -147,7 +224,7 @@ C 调用者加载 `packetbridge.dll`，取得 `PbGetInterfaceV2` 并协商函数
 
 接入时使用 [`rust/Cargo.toml`](rust/Cargo.toml) 中的工作区，或通过应用的本地路径依赖引用 `rust/packetbridge`。如需将绑定复制到另一应用，可使用 [`sync-rust-bindings.ps1`](tools/package/sync-rust-bindings.ps1) 的 `-ApplicationRoot` 参数；该脚本会检查目标 vendor 文件的所有权和哈希。
 
-`Library::load` 要求调用者保证 DLL 来源可信。加载时检查主函数表、生命周期扩展和分段扩展，旧 DLL 应配对旧绑定。`create_adapter_with_diagnostics` 保留原始 Windows 错误及恢复信息。
+`Library::load` 加载同一个 `wintun.dll`，要求调用者保证 DLL 来源可信。加载时检查主函数表、生命周期扩展和分段扩展，旧 DLL 应配对旧绑定。`create_adapter_with_diagnostics` 保留原始 Windows 错误及恢复信息。
 
 `Session::request_stop` 只确认本地停止接纳；只有 `prepare_close` 成功才能视为原生排空已确认。`close(timeout_ms)` 失败时保留会话，`Session` 的 Drop 将剩余清理交给持有独立 DLL 引用的原生运行时。关闭、策略和回退状态机的详细约定见[生命周期实施记录](docs/dll-lifecycle-implementation.md)。
 
@@ -182,7 +259,7 @@ pbprobe --tx-pressure DEVICE
 
 ## 旧版 Wintun 使用方式
 
-以下内容只适用于 `wintun.dll` 和 `Wintun*` API。原版部署可从 [wintun.net](https://www.wintun.net/)获取平台匹配的官方 DLL，与应用放在同一目录。官方 DLL 不包含本项目的 v2 接口，也不包含本分支新增的 `WintunShutdown`。
+以下 `Wintun*` 调用方式适用于本项目的统一兼容 DLL。官方 [wintun.net](https://www.wintun.net/) DLL 属于另一套完整驱动，不能用于连接本项目的 SYS，也不包含 `Pb*` 或 `WintunShutdown`。
 
 将 [`api/wintun.h`](api/wintun.h) 加入应用，通过 `LoadLibraryEx` 加载库，再用 `GetProcAddress` 按头文件中的函数类型解析导出。完整装载与网络配置示例见 [`example/example.c`](example/example.c)。
 
@@ -296,11 +373,11 @@ BOOL WintunShutdown(DWORD Timeout);
 
 ### 旧版工程构建与分发
 
-`wintun.sln` 保留上游 Visual Studio 开发入口；上游工具链要求为 Visual Studio 2019、Windows SDK 和 WDK。v2 应使用前面的独立 PowerShell 构建流程，不能将两套产物混用。
+发布构建统一由 `tools/build/build.ps1` 管理。`wintun.proj` 及 Visual Studio 的 API/Driver 构建入口转发到该流水线，避免生成另一套内核协议。目前发布目标为 x64；其他架构尚未完成移植和 ABI 验收。
 
 如需在专用测试系统中加载测试签名驱动，可按该系统要求启用测试签名；原上游开发流程使用 `bcdedit /set testsigning on` 后重启。本仓库的离线构建和测试不需要执行该步骤。
 
-沿用上游的分发要求：不要分发自行构建但仍以“Wintun”命名的驱动或文件，以免与官方部署冲突。使用原版功能时分发官方 DLL；本项目新增路线使用独立 PacketBridge 名称。
+兼容入口沿用 `wintun.dll` 文件名，以支持已有应用的加载方式；产品、驱动、硬件 ID 和安装作用域均使用 PacketBridgeV2，不能冒充官方发布包或覆盖其设备。
 
 ## 许可证
 

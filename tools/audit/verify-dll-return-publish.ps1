@@ -1,8 +1,10 @@
-param([string]$BaselineDirectory='out\dll-return-publish-baseline\96ef1d64980b')
+param([string]$BaselineDirectory='out\dll-return-publish-baseline\96ef1d64980b',
+    [string]$PolicyBaselineDirectory='out\packet-edge-baseline\6fb17007a923')
 # Frozen/current production core and ReleaseBatch, exact-wire regression and
 # alternating hosted costs. No driver install/load or kernel CPU measurement.
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '..\build\common.ps1')
+. (Join-Path $PSScriptRoot 'lso-checksum-ledger.ps1')
 trap {if($script:TestResultFile) {Write-TestRecording 'failed'};throw}
 Initialize-BuildEnvironment
 $script:SourceFingerprint=Get-SourceFingerprint
@@ -13,6 +15,13 @@ foreach($entry in @(
     @('api\v2\session_queue.h','1f0081178e59db3833ecc99b00eb325e0be83448f5e86fc8f1c4a0597c355dca'))) {
     if((Get-FileHash -LiteralPath (Join-Path $baseline $entry[0])).Hash.ToLowerInvariant() -ne $entry[1]) {throw "Unexpected return-publish baseline: $($entry[0])"}
 }
+# The historical core/queue snapshot is selective and has no policy source.
+# Bind that additional dependency to the complete accepted pre-repair snapshot.
+$policyBaseline=(Resolve-Path -LiteralPath $PolicyBaselineDirectory).Path
+$policyManifest=Get-Content -LiteralPath (Join-Path $policyBaseline 'baseline.json') -Raw|ConvertFrom-Json
+if($policyManifest.status -cne 'accepted' -or $policyManifest.source_tree_sha256 -cne '6fb17007a9234543f89dea26d3c705639e73b01c2fd2762943862149368a4826' -or
+    $policyManifest.files.'common/offload_policy.c' -cne 'a3a61042c8dc48ea02af9201fccf57c1da88a3cc52abf5de7c7fc56ffbd39374'){throw 'Unexpected complete policy baseline'}
+Assert-LsoChecksumDependency -BaselineDirectory $policyBaseline -Relative 'common/offload_policy.c'
 $directory=Join-Path $script:RepoRoot "out\dll-return-publish\$($script:SourceFingerprint.Substring(0,12))"
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
 $oldCore=Join-Path $directory 'core-before.c'
@@ -80,7 +89,11 @@ $summaries=foreach($group in ($samples | Group-Object variant,case,batch)) {
 if((Get-SourceFingerprint) -ne $script:SourceFingerprint){throw 'Sources changed during return-publish verification'}
 Write-TestRecording 'passed'
 [ordered]@{version=$script:Version;source_tree_sha256=$script:SourceFingerprint;baseline_directory=$baseline;
-    method='Frozen/current actual shared core and ReleaseBatch; exact-wire differential matrix, guarded boundaries, publication/reuse schedules, native concurrent event waits in MS/ISO volatile modes; actual API/lifecycle regressions. Seven alternating fixed-affinity hosted benchmark rounds, raw samples and native emitted code retained. Ring still writes full zero-metadata 64-byte descriptors. No kernel CPU, latency or throughput claim.';
+    production_changed=$true;
+    lso_checksum_ledger=@{path='tools/audit/lso-checksum-ledger.ps1';sha256=(Get-FileHash (Join-Path $PSScriptRoot 'lso-checksum-ledger.ps1')).Hash.ToLowerInvariant()};
+    reviewed_production_repairs=@('common/offload_policy.c');
+    common_policy_baseline=$policyBaseline;common_policy_baseline_source_tree_sha256=$policyManifest.source_tree_sha256;
+    method='Frozen/current actual shared core and ReleaseBatch; exact-wire differential matrix, guarded boundaries, publication/reuse schedules, native concurrent event waits in MS/ISO volatile modes; actual API/lifecycle regressions. Seven alternating fixed-affinity hosted benchmark rounds, raw samples and native emitted code retained. Ring still writes full zero-metadata 64-byte descriptors. No kernel CPU, latency or throughput claim. Historical policy dependency replay admits only the separately reviewed complete-file LSO/checksum configuration repair; all other source bindings and test paths retain their existing contracts.';
     kernel_runtime_tested=$false;operation_record=$script:TestResultFile;executables=$executables;native=$native;samples=$samples;summaries=@($summaries)} |
     ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $directory 'evidence.json') -Encoding utf8
 $summaries | Format-Table

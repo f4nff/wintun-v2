@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #pragma once
+#include "platform_mdl.h"
 /* Read only the current NET_BUFFER data, including noncontiguous MDL chains.
  * A failed read may have copied a prefix; callers must not publish its output. */
 static BOOLEAN PbV2Read(NET_BUFFER *nb, ULONG skip, UCHAR *out, ULONG length)
@@ -13,7 +14,7 @@ static BOOLEAN PbV2Read(NET_BUFFER *nb, ULONG skip, UCHAR *out, ULONG length)
         ULONG available = size - offset;
         if (skip >= available) skip -= available;
         else {
-            UCHAR *source = MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority | MdlMappingNoExecute);
+            UCHAR *source = PbV2MapMdl(mdl);
             if (!source) return FALSE;
             ULONG take = min(available - skip, length);
             RtlCopyMemory(out, source + offset + skip, take);

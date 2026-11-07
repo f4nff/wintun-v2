@@ -17,6 +17,7 @@
 #include <winefs.h>
 #include <stdlib.h>
 #include <assert.h>
+#include "../common/system_library.h"
 
 HINSTANCE ResourceModule;
 HANDLE ModuleHeap;
@@ -37,7 +38,7 @@ DelayedLoadLibraryHook(unsigned dliNotify, PDelayLoadInfo pdli)
 {
     if (dliNotify != dliNotePreLoadLibrary)
         return NULL;
-    HMODULE Library = LoadLibraryExA(pdli->szDll, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE Library = LoadSystemLibrary(pdli->szDll);
     if (!Library)
         abort();
     return (FARPROC)Library;
@@ -163,8 +164,12 @@ static VOID UnloadDependencies(VOID)
 BOOL MainRuntimeAcquire(VOID)
 {
     AcquireSRWLockExclusive(&DependencyLock);
-    while (DependencyUnloading)
-        SleepConditionVariableSRW(&DependencyChanged, &DependencyLock, INFINITE, 0);
+    while (DependencyUnloading && !RuntimeStopping)
+        if (!SleepConditionVariableSRW(&DependencyChanged, &DependencyLock, INFINITE, 0)) {
+            DWORD error = GetLastError();
+            ReleaseSRWLockExclusive(&DependencyLock);
+            SetLastError(error); return FALSE;
+        }
     if (RuntimeStopping) {
         ReleaseSRWLockExclusive(&DependencyLock);
         SetLastError(ERROR_SHUTDOWN_IN_PROGRESS); return FALSE;
@@ -199,7 +204,13 @@ VOID MainRuntimeRelease(VOID)
 }
 VOID MainRuntimeBeginShutdown(VOID)
 {
-    AcquireSRWLockExclusive(&DependencyLock); RuntimeStopping = TRUE;
+    AcquireSRWLockExclusive(&DependencyLock);
+    if (!RuntimeStopping) {
+        RuntimeStopping = TRUE;
+        /* Reject blocked acquisition without waiting for dependency unload.
+         * The unloader keeps its ownership; shutdown still waits for it. */
+        WakeAllConditionVariable(&DependencyChanged);
+    }
     ReleaseSRWLockExclusive(&DependencyLock);
     MainOperationRequestShutdown();
 }

@@ -35,6 +35,10 @@ typedef struct PB_LEASE {
  * module references for deferred cleanup. Close/PrepareClose timeout covers caller waiting;
  * timeout=0 does not synchronously drain or destroy. Non-success keeps the public handle valid.
  * Lifecycle extension ReleaseSession explicitly transfers that handle to native ownership.
+ * Batch output arrays/counts must stay caller-owned through the call. In particular,
+ * ReleaseBatch/CommitBatch reject a count output overlapping any packet in that
+ * transfer request. Other held loans remain usable as output storage. ReleaseBatch
+ * may snapshot input tokens from a packet being returned; that is not output storage.
  * The Rust wrapper enforces queue/lease lifetimes with borrows. */
 typedef struct PB_INTERFACE_V2 {
     uint32_t Size, Major, Minor, FileVersion;

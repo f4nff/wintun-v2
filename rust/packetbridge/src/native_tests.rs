@@ -373,6 +373,587 @@ fn checksum(bytes: &[u8]) -> u16 {
     }
     !(sum as u16)
 }
+
+type Batch32Leases = unsafe extern "system" fn(raw::Native, *mut raw::Lease, u32, *mut u32) -> u32;
+type Batch32Commit = unsafe extern "system" fn(raw::Native, *const raw::Lease, u32, *mut u32) -> u32;
+type Batch32Release = unsafe extern "system" fn(raw::Native, *const raw::Token, u32, *mut u32) -> u32;
+type Batch32Cancel = unsafe extern "system" fn(raw::Native, *const raw::Token, u32) -> u32;
+type Batch32Writer = unsafe extern "C" fn(
+    *const u8, u32, *const raw::Plan, u32, *mut raw::SegmentOutput, u32, *mut u32,
+) -> u32;
+type Batch32UnsizedWriter = unsafe extern "C" fn(
+    *const u8, *const raw::Plan, u32, *mut raw::SegmentOutput, u32, *mut u32,
+) -> u32;
+
+#[derive(Clone, Copy, Default)]
+struct Batch32Calls {
+    reserve: Option<Batch32Leases>,
+    receive: Option<Batch32Leases>,
+    commit: Option<Batch32Commit>,
+    release: Option<Batch32Release>,
+    cancel: Option<Batch32Cancel>,
+    writer: Option<Batch32Writer>,
+    unsized_writer: Option<Batch32UnsizedWriter>,
+    reserve_calls: u32,
+    reserve_requested: u32,
+    reserve_accepted: u32,
+    receive_calls: u32,
+    receive_requested: u32,
+    receive_accepted: u32,
+    commit_calls: u32,
+    commit_requested: u32,
+    commit_accepted: u32,
+    commit_last_result: u32,
+    commit_last_accepted: u32,
+    release_calls: u32,
+    release_requested: u32,
+    cancel_calls: u32,
+    cancel_requested: u32,
+    cancel_succeeded: u32,
+    writer_calls: u32,
+    writer_requested: u32,
+    writer_last_first: u32,
+    writer_last_count: u32,
+    writer_last_result: u32,
+    writer_last_written: u32,
+    expected_source: usize,
+    expected_length: u32,
+    expected_outputs: [usize; raw::MAX_SEGMENT_BATCH],
+    expected_first: u32,
+    expected_count: u32,
+    direct_output_buffers: bool,
+}
+std::thread_local! {
+    // Queue calls stay on their owning Rust test thread. Each test owns its
+    // Library table; parallel tests neither share these delegates nor counts.
+    static BATCH32_CALLS: std::cell::Cell<Batch32Calls> = const {
+        std::cell::Cell::new(Batch32Calls {
+            reserve: None, receive: None, commit: None, release: None, cancel: None, writer: None, unsized_writer: None,
+            reserve_calls: 0, reserve_requested: 0, reserve_accepted: 0,
+            receive_calls: 0, receive_requested: 0, receive_accepted: 0,
+            commit_calls: 0, commit_requested: 0, commit_accepted: 0, commit_last_result: 0, commit_last_accepted: 0,
+            release_calls: 0, release_requested: 0, cancel_calls: 0, cancel_requested: 0, cancel_succeeded: 0,
+            writer_calls: 0, writer_requested: 0, writer_last_first: 0, writer_last_count: 0, writer_last_result: 0, writer_last_written: 0,
+            expected_source: 0, expected_length: 0, expected_outputs: [0; raw::MAX_SEGMENT_BATCH],
+            expected_first: 0, expected_count: 32, direct_output_buffers: false,
+        })
+    };
+}
+unsafe extern "system" fn batch32_reserve(q: raw::Native, leases: *mut raw::Lease, n: u32, done: *mut u32) -> u32 {
+    let next = BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); calls.reserve_calls += 1; calls.reserve_requested += n;
+        cell.set(calls); calls.reserve.unwrap()
+    });
+    let result = unsafe { next(q, leases, n, done) };
+    BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); if result == raw::OK { calls.reserve_accepted += unsafe { *done }; } cell.set(calls);
+    });
+    result
+}
+unsafe extern "system" fn batch32_receive(q: raw::Native, leases: *mut raw::Lease, n: u32, done: *mut u32) -> u32 {
+    let next = BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); calls.receive_calls += 1; calls.receive_requested += n;
+        cell.set(calls); calls.receive.unwrap()
+    });
+    let result = unsafe { next(q, leases, n, done) };
+    BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); if result == raw::OK { calls.receive_accepted += unsafe { *done }; } cell.set(calls);
+    });
+    result
+}
+unsafe extern "system" fn batch32_commit(q: raw::Native, leases: *const raw::Lease, n: u32, done: *mut u32) -> u32 {
+    let next = BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); calls.commit_calls += 1; calls.commit_requested += n;
+        cell.set(calls); calls.commit.unwrap()
+    });
+    let result = unsafe { next(q, leases, n, done) };
+    BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); calls.commit_last_result = result; calls.commit_last_accepted = unsafe { *done };
+        if result == raw::OK { calls.commit_accepted += unsafe { *done }; } cell.set(calls);
+    });
+    result
+}
+unsafe extern "system" fn batch32_release(q: raw::Native, tokens: *const raw::Token, n: u32, done: *mut u32) -> u32 {
+    let next = BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); calls.release_calls += 1; calls.release_requested += n;
+        cell.set(calls); calls.release.unwrap()
+    });
+    unsafe { next(q, tokens, n, done) }
+}
+unsafe extern "system" fn batch32_cancel(q: raw::Native, tokens: *const raw::Token, n: u32) -> u32 {
+    let next = BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); calls.cancel_calls += 1; calls.cancel_requested += n;
+        cell.set(calls); calls.cancel.unwrap()
+    });
+    let result = unsafe { next(q, tokens, n) };
+    BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); if result == raw::OK { calls.cancel_succeeded += n; } cell.set(calls);
+    });
+    result
+}
+unsafe extern "C" fn batch32_writer(
+    source: *const u8, length: u32, plan: *const raw::Plan, first: u32,
+    outputs: *mut raw::SegmentOutput, n: u32, done: *mut u32,
+) -> u32 {
+    let next = BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); calls.writer_calls += 1; calls.writer_requested += n;
+        calls.direct_output_buffers = source as usize == calls.expected_source && length == calls.expected_length
+            && first == calls.expected_first && n == calls.expected_count && n <= 32 && !outputs.is_null()
+            && unsafe { std::slice::from_raw_parts(outputs, n as usize) }.iter().enumerate()
+                .all(|(i, output)| output.data as usize == calls.expected_outputs[i]);
+        cell.set(calls); calls.writer.unwrap()
+    });
+    let result = unsafe { next(source, length, plan, first, outputs, n, done) };
+    BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get(); calls.writer_last_first = first; calls.writer_last_count = n;
+        calls.writer_last_result = result; calls.writer_last_written = unsafe { *done }; cell.set(calls);
+    });
+    result
+}
+unsafe extern "C" fn batch32_reject_unsized(
+    _: *const u8, _: *const raw::Plan, _: u32, _: *mut raw::SegmentOutput, _: u32, _: *mut u32,
+) -> u32 { 1 }
+
+struct Batch32Counter;
+impl Batch32Counter {
+    fn attach(session: &mut Session) -> Self {
+        let library = Arc::get_mut(&mut session.library).unwrap();
+        BATCH32_CALLS.with(|cell| {
+            assert!(cell.get().writer.is_none());
+            cell.set(Batch32Calls {
+                reserve: library.api.reserve_batch, receive: library.api.receive_batch,
+                commit: library.api.commit_batch, release: library.api.release_batch, cancel: library.api.cancel_batch,
+                writer: library.packet.write_segment_batch, unsized_writer: library.api.write_segment_batch,
+                expected_count: 32,
+                ..Default::default()
+            });
+        });
+        library.api.reserve_batch = Some(batch32_reserve);
+        library.api.receive_batch = Some(batch32_receive);
+        library.api.commit_batch = Some(batch32_commit);
+        library.api.release_batch = Some(batch32_release);
+        library.api.cancel_batch = Some(batch32_cancel);
+        library.packet.write_segment_batch = Some(batch32_writer);
+        library.api.write_segment_batch = Some(batch32_reject_unsized);
+        Self
+    }
+    fn finish(self, session: &mut Session) -> Batch32Calls {
+        let calls = BATCH32_CALLS.with(std::cell::Cell::get);
+        let library = Arc::get_mut(&mut session.library).unwrap();
+        library.api.reserve_batch = calls.reserve; library.api.receive_batch = calls.receive;
+        library.api.commit_batch = calls.commit; library.api.release_batch = calls.release;
+        library.api.cancel_batch = calls.cancel;
+        library.packet.write_segment_batch = calls.writer;
+        library.api.write_segment_batch = calls.unsized_writer;
+        calls
+    }
+}
+impl Drop for Batch32Counter {
+    fn drop(&mut self) { BATCH32_CALLS.with(|cell| cell.set(Batch32Calls::default())); }
+}
+
+fn batch32_expect_outputs(batch: &ReceivedBatch<'_>, first: usize, outputs: &[Vec<u8>]) {
+    assert!(!outputs.is_empty() && outputs.len() <= raw::MAX_SEGMENT_BATCH);
+    BATCH32_CALLS.with(|cell| {
+        let mut calls = cell.get();
+        calls.expected_source = batch.items[0].data as usize;
+        calls.expected_length = batch.items[0].descriptor.length;
+        calls.expected_first = first as u32; calls.expected_count = outputs.len() as u32;
+        calls.expected_outputs = [0; raw::MAX_SEGMENT_BATCH];
+        for (i, output) in outputs.iter().enumerate() { calls.expected_outputs[i] = output.as_ptr() as usize; }
+        cell.set(calls);
+    });
+}
+
+fn batch32_payload(direction: u8, index: usize, length: usize) -> Vec<u8> {
+    let opaque = [0, u64::MAX, 0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210][index % 4];
+    let mut bytes: Vec<u8> = (0..length).map(|offset| (index * 17 + offset * 3) as u8).collect();
+    // Opaque application bytes, deliberately nonmonotonic and including both
+    // u64 extremes. These are not API send timestamps or clock samples.
+    bytes[..8].copy_from_slice(&opaque.to_le_bytes());
+    bytes[8..12].copy_from_slice(&(index as u32).to_be_bytes());
+    bytes[12] = direction;
+    bytes
+}
+fn batch32_packet(ip: u8, protocol: u8, payload: &[u8], sequence: u32, id: u16, flags: u8) -> Vec<u8> {
+    let ip_header = if ip == 4 { 20 } else { 40 };
+    let transport_header = if protocol == 6 { 20 } else { 8 };
+    let mut bytes = vec![0; ip_header + transport_header + payload.len()];
+    if ip == 4 {
+        bytes[0] = 0x45; bytes[8] = 64; bytes[9] = protocol;
+        let length = bytes.len() as u16;
+        bytes[2..4].copy_from_slice(&length.to_be_bytes());
+        bytes[4..6].copy_from_slice(&id.to_be_bytes()); bytes[6] = 0x40;
+        bytes[12..16].copy_from_slice(&[10, 0, 0, 1]); bytes[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        let value = checksum(&bytes[..20]); bytes[10..12].copy_from_slice(&value.to_be_bytes());
+    } else {
+        bytes[0] = 0x60; bytes[6] = protocol; bytes[7] = 64;
+        let length = (bytes.len() - 40) as u16;
+        bytes[4..6].copy_from_slice(&length.to_be_bytes());
+        bytes[8..12].copy_from_slice(&[0x20, 1, 0x0d, 0xb8]); bytes[23] = 1;
+        bytes[24..28].copy_from_slice(&[0x20, 1, 0x0d, 0xb8]); bytes[39] = 2;
+    }
+    let transport = &mut bytes[ip_header..];
+    transport[..4].copy_from_slice(&[0x27, 0x11, 0x27, 0x12]);
+    if protocol == 6 {
+        transport[4..8].copy_from_slice(&sequence.to_be_bytes());
+        transport[8..12].copy_from_slice(&42u32.to_be_bytes());
+        transport[12] = 0x50; transport[13] = flags; transport[14..16].copy_from_slice(&8192u16.to_be_bytes());
+    } else {
+        let length = transport.len() as u16; transport[4..6].copy_from_slice(&length.to_be_bytes());
+    }
+    transport[transport_header..].copy_from_slice(payload);
+    let mut pseudo = if ip == 4 { bytes[12..20].to_vec() } else { bytes[8..40].to_vec() };
+    let length = (bytes.len() - ip_header) as u32;
+    if ip == 4 { pseudo.extend_from_slice(&[0, protocol]); pseudo.extend_from_slice(&(length as u16).to_be_bytes()); }
+    else { pseudo.extend_from_slice(&length.to_be_bytes()); pseudo.extend_from_slice(&[0, 0, 0, protocol]); }
+    pseudo.extend_from_slice(&bytes[ip_header..]);
+    let value = checksum(&pseudo); let value = if protocol == 17 && value == 0 { u16::MAX } else { value };
+    let offset = ip_header + if protocol == 6 { 16 } else { 6 };
+    bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    bytes
+}
+
+#[test]
+fn batch32_ipv4_checked_segments_use_one_ffi_call() {
+    check_batch32_checked_segments_use_one_ffi_call(4);
+}
+
+#[test]
+fn batch32_ipv6_checked_segments_use_one_ffi_call() {
+    check_batch32_checked_segments_use_one_ffi_call(6);
+}
+
+fn check_batch32_checked_segments_use_one_ffi_call(ip: u8) {
+    const MSS: usize = 256;
+    for (protocol, kind) in [(6, raw::TCP_GSO), (17, raw::UDP_GSO)] {
+        let mut session = fixture();
+        let counter = Batch32Counter::attach(&mut session);
+        {
+            let q = session.queue(0).unwrap();
+            let payload: Vec<u8> = (0..32).flat_map(|i| batch32_payload(0xa1, i, MSS)).collect();
+            let source = batch32_packet(ip, protocol, &payload, 0xffff_fff0, 0xfffe, 0x19);
+            assert!(source.len() <= u16::MAX as usize);
+            assert_eq!(inject(&session, &source, kind, MSS as u32), raw::OK);
+            let mut batch = q.receive(32).unwrap();
+            assert_eq!(batch.len(), 1);
+            assert_eq!(batch.segment_count(0).unwrap(), 32);
+            let original = batch.data(0).unwrap().to_vec();
+            let header = if ip == 4 { 20 } else { 40 } + if protocol == 6 { 20 } else { 8 };
+            let mut buffers = vec![vec![0xa5; header + MSS + 16]; 32];
+            BATCH32_CALLS.with(|cell| {
+                let mut calls = cell.get();
+                calls.expected_source = batch.items[0].data as usize;
+                calls.expected_length = source.len() as u32;
+                for (i, buffer) in buffers.iter().enumerate() { calls.expected_outputs[i] = buffer.as_ptr() as usize; }
+                cell.set(calls);
+            });
+            let lengths = {
+                let mut outputs: Vec<&mut [u8]> = buffers.iter_mut().map(Vec::as_mut_slice).collect();
+                batch.write_segments(0, 0, &mut outputs).unwrap()
+            };
+            assert_eq!(lengths, vec![header + MSS; 32]);
+            for i in 0..32 {
+                let id_mask = if protocol == 6 { 0x7fff } else { 0xffff };
+                let expected = batch32_packet(ip, protocol, &payload[i * MSS..(i + 1) * MSS],
+                    0xffff_fff0u32.wrapping_add((i * MSS) as u32), (0xfffeu32 + i as u32) as u16 & id_mask,
+                    if i == 31 { 0x19 } else { 0x10 });
+                assert_eq!(&buffers[i][..lengths[i]], expected.as_slice(), "ip={ip} protocol={protocol} segment={i}");
+                assert!(buffers[i][lengths[i]..].iter().all(|byte| *byte == 0xa5));
+            }
+            assert_eq!(batch.data(0).unwrap(), original);
+            assert_eq!(batch.release().unwrap(), 1);
+        }
+        let calls = counter.finish(&mut session);
+        assert_eq!((calls.writer_calls, calls.writer_requested), (1, 32));
+        assert!(calls.direct_output_buffers);
+        assert_eq!((calls.reserve_calls, calls.commit_calls), (0, 0));
+        assert_eq!((calls.receive_calls, calls.release_calls), (1, 1));
+        assert_eq!(session.close_progress().unwrap().user_leases, 0);
+        session.close(1000).unwrap();
+        println!("BATCH32 checked ip={ip} protocol={protocol} segments=32 ffi_calls=1 commit_calls=0 opaque_payload=preserved");
+    }
+}
+
+#[test]
+fn batch32_ipv4_plain_packets_keep_directions_and_single_commit() {
+    check_batch32_plain_packets_keep_directions_and_single_commit(4);
+}
+
+#[test]
+fn batch32_ipv6_plain_packets_keep_directions_and_single_commit() {
+    check_batch32_plain_packets_keep_directions_and_single_commit(6);
+}
+
+fn check_batch32_plain_packets_keep_directions_and_single_commit(ip: u8) {
+    type Take = unsafe extern "C" fn(raw::Native, u32, *mut raw::Descriptor, u32, *mut u32) -> u32;
+    type Complete = unsafe extern "C" fn(raw::Native, u32, *const raw::Descriptor, u32) -> u32;
+    for protocol in [6, 17] {
+        let mut session = fixture_with_config(Config { queues: 1, slots: 32, ring_capacity: 32, ..Config::default() });
+        let take: Take = unsafe { symbol(&session.library, c"PbTestTake") };
+        let complete: Complete = unsafe { symbol(&session.library, c"PbTestComplete") };
+        let counter = Batch32Counter::attach(&mut session);
+        {
+            let q = session.queue(0).unwrap();
+            let up: Vec<Vec<u8>> = (0..32).map(|i| batch32_packet(ip, protocol, &batch32_payload(0xa1, i, 64),
+                0xffff_fff0u32.wrapping_add((i * 64) as u32), i as u16, 0x18)).collect();
+            let down: Vec<Vec<u8>> = (0..32).map(|i| batch32_packet(ip, protocol, &batch32_payload(0xb2, i, 64),
+                0xffff_fff0u32.wrapping_add((i * 64) as u32), i as u16, 0x18)).collect();
+            for packet in &up { assert_eq!(inject(&session, packet, raw::PLAIN, 0), raw::OK); }
+            let mut received = q.receive(32).unwrap();
+            assert_eq!(received.len(), 32);
+            for (i, packet) in up.iter().enumerate() {
+                assert_eq!(received.data(i).unwrap(), packet);
+                // The Vec contains copied lease metadata, not payload: the
+                // returned slice still borrows the actual native address.
+                assert_eq!(received.data(i).unwrap().as_ptr(), received.items[i].data.cast_const());
+            }
+            let mut reserved = q.reserve(32).unwrap();
+            assert_eq!(reserved.len(), 32);
+            let mut addresses = [ptr::null_mut(); 32];
+            let tokens: Vec<_> = reserved.items.iter().map(|lease| lease.descriptor.token).collect();
+            for (i, packet) in down.iter().enumerate() {
+                addresses[i] = reserved.items[i].data;
+                let output = reserved.data_mut(i).unwrap();
+                assert_eq!(output.as_mut_ptr(), addresses[i]);
+                output[..packet.len()].copy_from_slice(packet);
+                reserved.set_length(i, packet.len()).unwrap();
+            }
+            assert_eq!(reserved.commit().unwrap(), 32);
+            assert!(reserved.is_empty());
+            let mut descriptors = [raw::Descriptor::default(); 32];
+            let mut count = 0;
+            assert_eq!(unsafe { take(session.pointer().unwrap(), 0, descriptors.as_mut_ptr(), 32, &mut count) }, raw::OK);
+            assert_eq!(count, 32);
+            for (i, descriptor) in descriptors.iter().enumerate() {
+                assert_eq!(descriptor.token, tokens[i]);
+                assert_eq!(descriptor.length as usize, down[i].len());
+                // PbTestTake now owns this published slot as the modeled
+                // kernel peer. No public caller re-borrows after Commit.
+                let packet = unsafe { std::slice::from_raw_parts(addresses[i], descriptor.length as usize) };
+                assert_eq!(packet, down[i]);
+                assert_ne!(packet, received.data(i).unwrap());
+                assert_eq!(received.data(i).unwrap(), up[i]);
+            }
+            assert_eq!(unsafe { complete(session.pointer().unwrap(), 0, descriptors.as_ptr(), 32) }, raw::OK);
+            assert_eq!(q.completions(32).unwrap().len(), 32);
+            assert_eq!(received.release().unwrap(), 32);
+            assert!(received.is_empty());
+        }
+        let calls = counter.finish(&mut session);
+        assert_eq!((calls.reserve_calls, calls.reserve_requested), (1, 32));
+        assert_eq!((calls.commit_calls, calls.commit_requested), (1, 32));
+        assert_eq!((calls.receive_calls, calls.receive_requested), (1, 32));
+        assert_eq!((calls.release_calls, calls.release_requested), (1, 32));
+        assert_eq!(calls.writer_calls, 0);
+        assert_eq!(session.close_progress().unwrap().user_leases, 0);
+        session.close(1000).unwrap();
+        println!("BATCH32 plain ip={ip} protocol={protocol} kernel_to_user=32 user_to_kernel=32 reserve_calls=1 commit_calls=1 receive_calls=1 release_calls=1 opaque_payload=preserved");
+    }
+}
+
+#[test]
+fn batch32_ipv4_short_output_preserves_prefix_and_retries_only_tail() {
+    check_batch32_short_output_preserves_prefix_and_retries_only_tail(4);
+}
+
+#[test]
+fn batch32_ipv6_short_output_preserves_prefix_and_retries_only_tail() {
+    check_batch32_short_output_preserves_prefix_and_retries_only_tail(6);
+}
+
+fn check_batch32_short_output_preserves_prefix_and_retries_only_tail(ip: u8) {
+    const MSS: usize = 256;
+    for (protocol, kind) in [(6, raw::TCP_GSO), (17, raw::UDP_GSO)] {
+        for short in [0, 1, 31] {
+            let mut session = fixture();
+            let counter = Batch32Counter::attach(&mut session);
+            {
+                let q = session.queue(0).unwrap();
+                let payload: Vec<u8> = (0..32).flat_map(|i| batch32_payload(0xa1, i, MSS)).collect();
+                let source = batch32_packet(ip, protocol, &payload, 0xffff_fff0, 0xfffe, 0x19);
+                assert_eq!(inject(&session, &source, kind, MSS as u32), raw::OK);
+                let mut batch = q.receive(32).unwrap();
+                assert_eq!((batch.len(), batch.segment_count(0).unwrap()), (1, 32));
+                let header = if ip == 4 { 20 } else { 40 } + if protocol == 6 { 20 } else { 8 };
+                let length = header + MSS;
+                let mut buffers = vec![vec![0xa5; length + 16]; 32];
+                batch32_expect_outputs(&batch, 0, &buffers);
+                let prefix = {
+                    // The short declared span has a readable sentinel tail,
+                    // so an erroneous native write cannot be hidden by a
+                    // later Vec resize or buffer reinitialization.
+                    let mut outputs: Vec<&mut [u8]> = buffers.iter_mut().enumerate()
+                        .map(|(i, buffer)| if i == short { &mut buffer[..length - 1] } else { buffer.as_mut_slice() }).collect();
+                    batch.write_segments(0, 0, &mut outputs)
+                };
+                if short == 0 { assert_eq!(prefix, Err(Error(3))); }
+                else { assert_eq!(prefix.unwrap(), vec![length; short]); }
+                let observed = BATCH32_CALLS.with(std::cell::Cell::get);
+                assert!(observed.direct_output_buffers);
+                assert_eq!((observed.writer_last_first, observed.writer_last_count, observed.writer_last_result, observed.writer_last_written),
+                    (0, 32, 3, short as u32));
+                for buffer in &buffers[short..] { assert!(buffer.iter().all(|byte| *byte == 0xa5)); }
+                let saved_prefix = buffers[..short].to_vec(); // Test oracle only, not a payload-path allocation.
+                batch32_expect_outputs(&batch, short, &buffers[short..]);
+                let suffix = {
+                    let mut outputs: Vec<&mut [u8]> = buffers[short..].iter_mut().map(Vec::as_mut_slice).collect();
+                    batch.write_segments(0, short, &mut outputs).unwrap()
+                };
+                assert_eq!(suffix, vec![length; 32 - short]);
+                assert_eq!(&buffers[..short], saved_prefix.as_slice());
+                for i in 0..32 {
+                    let mask = if protocol == 6 { 0x7fff } else { 0xffff };
+                    let expected = batch32_packet(ip, protocol, &payload[i * MSS..(i + 1) * MSS],
+                        0xffff_fff0u32.wrapping_add((i * MSS) as u32), (0xfffeu32 + i as u32) as u16 & mask,
+                        if i == 31 { 0x19 } else { 0x10 });
+                    assert_eq!(&buffers[i][..length], expected.as_slice(), "ip={ip} protocol={protocol} short={short} index={i}");
+                    assert!(buffers[i][length..].iter().all(|byte| *byte == 0xa5));
+                }
+                assert_eq!(batch.data(0).unwrap(), source);
+                let mut invalid_tail = [&mut buffers[0][..]];
+                assert_eq!(batch.write_segments(0, 32, &mut invalid_tail), Err(Error(1)));
+                assert_eq!(batch.release().unwrap(), 1);
+            }
+            let calls = counter.finish(&mut session);
+            assert!(calls.direct_output_buffers);
+            assert_eq!((calls.writer_calls, calls.writer_requested), (2, (64 - short) as u32));
+            assert_eq!((calls.writer_last_first, calls.writer_last_count, calls.writer_last_result, calls.writer_last_written),
+                (short as u32, (32 - short) as u32, 0, (32 - short) as u32));
+            assert_eq!((calls.reserve_calls, calls.commit_calls, calls.cancel_calls), (0, 0, 0));
+            assert_eq!((calls.release_calls, calls.release_requested), (1, 1));
+            assert_eq!(session.close_progress().unwrap().user_leases, 0);
+            session.close(1000).unwrap();
+            println!("BATCH32_PREFIX ip={ip} protocol={protocol} short={short} prefix={short} retry={} writer_calls=2 source_and_sentinels=preserved", 32 - short);
+        }
+    }
+}
+
+#[test]
+fn batch32_ipv4_partial_reserve_stop_rejects_commit_and_drop_cancels_loans() {
+    check_batch32_partial_reserve_stop_rejects_commit_and_drop_cancels_loans(4);
+}
+
+#[test]
+fn batch32_ipv6_partial_reserve_stop_rejects_commit_and_drop_cancels_loans() {
+    check_batch32_partial_reserve_stop_rejects_commit_and_drop_cancels_loans(6);
+}
+
+fn check_batch32_partial_reserve_stop_rejects_commit_and_drop_cancels_loans(ip: u8) {
+    type Take = unsafe extern "C" fn(raw::Native, u32, *mut raw::Descriptor, u32, *mut u32) -> u32;
+    for protocol in [6, 17] {
+        let mut session = fixture_with_config(Config { queues: 1, slots: 32, ring_capacity: 32, ..Config::default() });
+        let take: Take = unsafe { symbol(&session.library, c"PbTestTake") };
+        let counter = Batch32Counter::attach(&mut session);
+        {
+            let q = session.queue(0).unwrap();
+            let mut first = q.reserve(31).unwrap();
+            let mut tail = q.reserve(32).unwrap(); // The real native free pool has only one slot left.
+            assert_eq!((first.len(), tail.len()), (31, 1));
+            for i in 0..32 {
+                let packet = batch32_packet(ip, protocol, &batch32_payload(0xb2, i, 64),
+                    0xffff_fff0u32.wrapping_add((i * 64) as u32), i as u16, 0x18);
+                let (batch, index) = if i == 31 { (&mut tail, 0) } else { (&mut first, i) };
+                batch.data_mut(index).unwrap()[..packet.len()].copy_from_slice(&packet);
+                batch.set_length(index, packet.len()).unwrap();
+            }
+            assert_eq!(session.close_progress().unwrap().user_leases, 32);
+            session.request_stop().unwrap();
+            assert_eq!(session.prepare_close(0), Err(Error(raw::BUSY)));
+            assert_eq!(first.commit(), Err(Error(7)));
+            assert_eq!((first.len(), tail.len()), (31, 1));
+            let state = session.close_progress().unwrap();
+            assert_eq!(state.user_leases, 32);
+            assert!(state.retained_bytes > 0);
+            for i in 0..31 {
+                let packet = batch32_packet(ip, protocol, &batch32_payload(0xb2, i, 64),
+                    0xffff_fff0u32.wrapping_add((i * 64) as u32), i as u16, 0x18);
+                assert_eq!(&first.data_mut(i).unwrap()[..packet.len()], packet);
+            }
+            let mut descriptors = [raw::Descriptor::default(); 32];
+            let mut count = u32::MAX;
+            assert_eq!(unsafe { take(session.pointer().unwrap(), 0, descriptors.as_mut_ptr(), 32, &mut count) }, raw::EMPTY);
+            assert_eq!(count, 0); // Failed Commit did not publish any prefix.
+            drop(tail);
+            assert_eq!(session.close_progress().unwrap().user_leases, 31);
+            drop(first);
+            assert_eq!(session.close_progress().unwrap().user_leases, 0);
+        }
+        session.prepare_close(1000).unwrap();
+        let calls = counter.finish(&mut session);
+        assert_eq!((calls.reserve_calls, calls.reserve_requested, calls.reserve_accepted), (2, 63, 32));
+        assert_eq!((calls.commit_calls, calls.commit_requested, calls.commit_accepted, calls.commit_last_result, calls.commit_last_accepted), (1, 31, 0, 7, 0));
+        assert_eq!((calls.cancel_calls, calls.cancel_requested, calls.cancel_succeeded), (2, 32, 32));
+        assert_eq!(calls.writer_calls, 0);
+        session.close(1000).unwrap();
+        println!("BATCH32_RESERVE_STOP ip={ip} protocol={protocol} reserved=31+1 commit=stopped accepted=0 drop_cancel=1+31 loans=0");
+    }
+}
+
+#[test]
+fn batch32_ipv4_gso_loan_stays_borrowable_until_return_after_prepare_close() {
+    check_batch32_gso_loan_stays_borrowable_until_return_after_prepare_close(4);
+}
+
+#[test]
+fn batch32_ipv6_gso_loan_stays_borrowable_until_return_after_prepare_close() {
+    check_batch32_gso_loan_stays_borrowable_until_return_after_prepare_close(6);
+}
+
+fn check_batch32_gso_loan_stays_borrowable_until_return_after_prepare_close(ip: u8) {
+    const MSS: usize = 256;
+    for (protocol, kind) in [(6, raw::TCP_GSO), (17, raw::UDP_GSO)] {
+        let mut session = fixture();
+        let counter = Batch32Counter::attach(&mut session);
+        {
+            let q = session.queue(0).unwrap();
+            let payload: Vec<u8> = (0..32).flat_map(|i| batch32_payload(0xa1, i, MSS)).collect();
+            let source = batch32_packet(ip, protocol, &payload, 0xffff_fff0, 0xfffe, 0x19);
+            assert_eq!(inject(&session, &source, kind, MSS as u32), raw::OK);
+            let batch = q.receive(32).unwrap();
+            assert_eq!((batch.len(), batch.segment_count(0).unwrap()), (1, 32));
+            let pointer = batch.items[0].data;
+            session.request_stop().unwrap();
+            assert_eq!(session.prepare_close(0), Err(Error(raw::BUSY)));
+            let progress = session.close_progress().unwrap();
+            assert_eq!(progress.user_leases, 1);
+            assert!(progress.retained_bytes > 0);
+            assert_eq!(batch.data(0).unwrap().as_ptr(), pointer.cast_const());
+            assert_eq!(batch.data(0).unwrap(), source);
+            assert!(matches!(q.receive(1), Err(Error(7))));
+            assert!(matches!(q.reserve(1), Err(Error(7))));
+            let header = if ip == 4 { 20 } else { 40 } + if protocol == 6 { 20 } else { 8 };
+            let mut buffers = vec![vec![0xa5; header + MSS + 16]; 32];
+            batch32_expect_outputs(&batch, 0, &buffers);
+            let lengths = {
+                let mut outputs: Vec<&mut [u8]> = buffers.iter_mut().map(Vec::as_mut_slice).collect();
+                batch.write_segments(0, 0, &mut outputs).unwrap()
+            };
+            assert_eq!(lengths, vec![header + MSS; 32]);
+            for i in 0..32 {
+                let mask = if protocol == 6 { 0x7fff } else { 0xffff };
+                let expected = batch32_packet(ip, protocol, &payload[i * MSS..(i + 1) * MSS],
+                    0xffff_fff0u32.wrapping_add((i * MSS) as u32), (0xfffeu32 + i as u32) as u16 & mask,
+                    if i == 31 { 0x19 } else { 0x10 });
+                assert_eq!(&buffers[i][..lengths[i]], expected);
+                assert!(buffers[i][lengths[i]..].iter().all(|byte| *byte == 0xa5));
+            }
+            assert_eq!(batch.data(0).unwrap(), source);
+            drop(batch); // Actual retirement remains allowed after admission stops.
+            assert_eq!(session.close_progress().unwrap().user_leases, 0);
+        }
+        session.prepare_close(1000).unwrap();
+        let calls = counter.finish(&mut session);
+        assert!(calls.direct_output_buffers);
+        assert_eq!((calls.writer_calls, calls.writer_requested), (1, 32));
+        assert_eq!((calls.receive_calls, calls.receive_requested, calls.receive_accepted), (2, 33, 1));
+        assert_eq!((calls.reserve_calls, calls.reserve_requested, calls.reserve_accepted), (1, 1, 0));
+        assert_eq!((calls.commit_calls, calls.cancel_calls), (0, 0));
+        assert_eq!((calls.release_calls, calls.release_requested), (1, 1));
+        session.close(1000).unwrap();
+        println!("BATCH32_GSO_STOP ip={ip} protocol={protocol} held=1 generated=32 writer_calls=1 drop_return=1 loans=0 mapping=retained_until_return");
+    }
+}
 #[test]
 fn real_c_gso_crosses_ffi_once_per_batch_and_preserves_wire_checksums() {
     let mut session = fixture();
@@ -604,4 +1185,147 @@ fn dropping_a_policy_ticket_releases_its_slot_after_native_completion() {
     session.close(2000).unwrap();
     assert_ne!(unsafe { CloseHandle(entered) }, 0);
     assert_ne!(unsafe { CloseHandle(gate) }, 0);
+}
+
+fn check_batch32_gso_prefix_retirement_keeps_rebased_tail_and_reused_slot_independent(ip: u8) {
+    const MSS: usize = 256;
+    const PER_SOURCE: usize = 16;
+    for (protocol, kind) in [(6, raw::TCP_GSO), (17, raw::UDP_GSO)] {
+        let mut session = fixture();
+        let counter = Batch32Counter::attach(&mut session);
+        {
+            let q = session.queue(0).unwrap();
+            let payloads: [Vec<u8>; 2] = std::array::from_fn(|source| {
+                (source * PER_SOURCE..(source + 1) * PER_SOURCE)
+                    .flat_map(|index| batch32_payload(0xa1 + source as u8, index, MSS)).collect()
+            });
+            let sequences = [0xffff_fff0u32, 0x1234_5670];
+            let ids = [0xfffeu16, 0x7ff8];
+            let flags = [0x19u8, 0x99];
+            let sources: [Vec<u8>; 2] = std::array::from_fn(|source| {
+                batch32_packet(ip, protocol, &payloads[source], sequences[source], ids[source], flags[source])
+            });
+            for source in &sources {
+                assert_eq!(inject(&session, source, kind, MSS as u32), raw::OK);
+            }
+            let mut batch = q.receive(32).unwrap();
+            assert_eq!(batch.len(), 2);
+            assert_eq!(session.close_progress().unwrap().user_leases, 2);
+            let first_token = batch.metadata(0).unwrap().token;
+            let first_address = batch.data(0).unwrap().as_ptr() as usize;
+            let tail_address = batch.data(1).unwrap().as_ptr() as usize;
+            assert_ne!(first_address, tail_address);
+            let metadata_fields = |descriptor: &raw::Descriptor| [
+                descriptor.token.epoch, descriptor.token.generation as u64,
+                descriptor.token.slot as u64, descriptor.token.queue as u64,
+                descriptor.kind as u64, descriptor.length as u64, descriptor.data_offset as u64,
+                descriptor.flags as u64, descriptor.mss as u64, descriptor.l4_offset as u64,
+                descriptor.header_length as u64, descriptor.ip_version as u64, descriptor.protocol as u64,
+                descriptor.reserved16 as u64, descriptor.status as u64,
+                descriptor.reserved64[0], descriptor.reserved64[1],
+            ];
+            let plan_fields = |plan: raw::Plan| [
+                plan.source, plan.payload, plan.count, plan.mss, plan.header as u32,
+                plan.l4 as u32, plan.l4_header as u32, plan.pseudo_source as u32,
+                plan.pseudo_destination as u32, plan.ip as u32, plan.protocol as u32,
+                plan.kind as u32, plan.udp_zero as u32,
+            ];
+            let tail_metadata = metadata_fields(batch.metadata(1).unwrap());
+            let tail_plan = plan_fields(batch.plan(&batch.items[1]).unwrap());
+            assert_eq!(batch.segment_count(0).unwrap(), PER_SOURCE);
+            assert_eq!(batch.segment_count(1).unwrap(), PER_SOURCE);
+            let header = if ip == 4 { 20 } else { 40 } + if protocol == 6 { 20 } else { 8 };
+            let length = header + MSS;
+            let mut buffers: [Vec<Vec<u8>>; 2] = std::array::from_fn(|_| vec![vec![0xa5; length + 16]; 32]);
+            let write_and_check = |batch: &ReceivedBatch<'_>, source: usize, outputs: &mut [Vec<u8>]| {
+                batch32_expect_outputs(batch, 0, outputs);
+                let lengths = {
+                    let mut spans: Vec<&mut [u8]> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
+                    batch.write_segments(0, 0, &mut spans).unwrap()
+                };
+                // The caller offers 32 buffers, but this descriptor has only
+                // 16 segments. Rust must return the actual C written prefix.
+                assert_eq!(lengths, vec![length; PER_SOURCE]);
+                let observed = BATCH32_CALLS.with(std::cell::Cell::get);
+                assert!(observed.direct_output_buffers);
+                assert_eq!((observed.writer_last_first, observed.writer_last_count,
+                    observed.writer_last_result, observed.writer_last_written), (0, 32, 0, PER_SOURCE as u32));
+                for index in 0..PER_SOURCE {
+                    let mask = if protocol == 6 { 0x7fff } else { 0xffff };
+                    let segment_flags = (flags[source] & !0x89)
+                        | if index == 0 { flags[source] & 0x80 } else { 0 }
+                        | if index + 1 == PER_SOURCE { flags[source] & 0x09 } else { 0 };
+                    let expected = batch32_packet(ip, protocol, &payloads[source][index * MSS..(index + 1) * MSS],
+                        sequences[source].wrapping_add((index * MSS) as u32),
+                        (ids[source] as u32 + index as u32) as u16 & mask, segment_flags);
+                    assert_eq!(&outputs[index][..length], expected.as_slice(),
+                        "ip={ip} protocol={protocol} source={source} segment={index}");
+                    assert!(outputs[index][length..].iter().all(|byte| *byte == 0xa5));
+                }
+                for output in &outputs[PER_SOURCE..] {
+                    assert!(output.iter().all(|byte| *byte == 0xa5));
+                }
+                assert_eq!(batch.data(0).unwrap(), sources[source]);
+            };
+            write_and_check(&batch, 0, &mut buffers[0]);
+            assert_eq!(batch.data(1).unwrap(), sources[1]);
+            // After this successful return, never read the first loan's data
+            // again. Only its copied token/address and owned output survive.
+            assert_eq!(batch.release_prefix(1).unwrap(), 1);
+            assert_eq!(batch.len(), 1);
+            assert_eq!(session.close_progress().unwrap().user_leases, 1);
+            assert_eq!(batch.data(0).unwrap().as_ptr() as usize, tail_address);
+            assert_eq!(metadata_fields(batch.metadata(0).unwrap()), tail_metadata);
+            assert_eq!(plan_fields(batch.plan(&batch.items[0]).unwrap()), tail_plan);
+            let replacement = batch32_packet(ip, protocol, &batch32_payload(0xc3, 99, 64),
+                0x7654_3210, 0x1234, 0x10);
+            assert_ne!(replacement, sources[0]);
+            assert_eq!(inject(&session, &replacement, raw::PLAIN, 0), raw::OK);
+            let mut reused = q.receive(32).unwrap();
+            assert_eq!(reused.len(), 1);
+            let reused_token = reused.metadata(0).unwrap().token;
+            assert_eq!(reused_token, raw::Token {
+                generation: first_token.generation.checked_add(1).unwrap(), ..first_token
+            });
+            assert_eq!(reused.metadata(0).unwrap().kind, raw::PLAIN);
+            assert_eq!(reused.data(0).unwrap().as_ptr() as usize, first_address);
+            assert_ne!(reused.data(0).unwrap().as_ptr() as usize, tail_address);
+            assert_eq!(reused.data(0).unwrap(), replacement);
+            assert_eq!(session.close_progress().unwrap().user_leases, 2);
+            assert_eq!(batch.len(), 1);
+            assert!(batch.metadata(1).is_none() && batch.data(1).is_none());
+            assert_eq!(batch.data(0).unwrap().as_ptr() as usize, tail_address);
+            assert_eq!(metadata_fields(batch.metadata(0).unwrap()), tail_metadata);
+            assert_eq!(plan_fields(batch.plan(&batch.items[0]).unwrap()), tail_plan);
+            assert_eq!(batch.segment_count(0).unwrap(), PER_SOURCE);
+            let first_output_before_tail = buffers[0].clone(); // Test oracle only.
+            write_and_check(&batch, 1, &mut buffers[1]);
+            assert_eq!(buffers[0], first_output_before_tail);
+            assert_eq!(reused.data(0).unwrap(), replacement);
+            assert_eq!(batch.release().unwrap(), 1);
+            assert_eq!(session.close_progress().unwrap().user_leases, 1);
+            assert_eq!(reused.data(0).unwrap(), replacement);
+            assert_eq!(reused.release().unwrap(), 1);
+            assert!(batch.is_empty() && reused.is_empty());
+        }
+        let calls = counter.finish(&mut session);
+        assert_eq!((calls.writer_calls, calls.writer_requested), (2, 64));
+        assert!(calls.direct_output_buffers);
+        assert_eq!((calls.receive_calls, calls.receive_requested, calls.receive_accepted), (2, 64, 3));
+        assert_eq!((calls.release_calls, calls.release_requested), (3, 3));
+        assert_eq!((calls.reserve_calls, calls.commit_calls, calls.cancel_calls), (0, 0, 0));
+        assert_eq!(session.close_progress().unwrap().user_leases, 0);
+        session.close(1000).unwrap();
+        println!("BATCH32_REBASE ip={ip} protocol={protocol} sources=2 segments=32 writer_calls=2 requested=64 written=16+16 receives=2 loans=3 releases=3 reused_generation=2 source_and_sentinels=preserved");
+    }
+}
+
+#[test]
+fn batch32_ipv4_gso_prefix_retirement_keeps_rebased_tail_and_reused_slot_independent() {
+    check_batch32_gso_prefix_retirement_keeps_rebased_tail_and_reused_slot_independent(4);
+}
+
+#[test]
+fn batch32_ipv6_gso_prefix_retirement_keeps_rebased_tail_and_reused_slot_independent() {
+    check_batch32_gso_prefix_retirement_keeps_rebased_tail_and_reused_slot_independent(6);
 }
