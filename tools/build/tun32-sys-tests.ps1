@@ -9,7 +9,7 @@ function Build-Tun32SysTests {
     $hosts=[ordered]@{
         'tests\model\send_window_tests.c'='a6df5a009da56d1617af06a4f8904055c19fc9c06b78301e680d25466bd1dcfe'
         'tests\model\send_describe_tests.c'='48c1989e129f8b315a6525691b45a4fc6d026399da848dbb933f6f96ac26076e'
-        'tests\model\drain_boundary_tests.c'='4fd8afe2b998c6ca628ff05fa266b689e4602be4e68109a477cc5f3001fa7df5'
+        'tests\model\drain_boundary_tests.c'='50753c442cbeaaaa3956cc27d9884cb93fbe316a42953f387514f530466bc4a8'
         'tests\model\kernel_nbl_fixture.h'='c236a169004e4851111c1000353b85685dbe92b32191e8cb28509989f19d0eb3'
     }
     foreach($relative in $hosts.Keys){$source=Join-Path $script:RepoRoot $relative;$hash=(Get-FileHash $source).Hash.ToLowerInvariant()

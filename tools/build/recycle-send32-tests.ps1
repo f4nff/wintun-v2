@@ -1,4 +1,4 @@
-﻿function Build-RecycleSend32Tests {
+function Build-RecycleSend32Tests {
     param([Parameter(Mandatory)][string]$Directory,[Parameter(Mandatory)][ValidateSet(4,6)][int]$IpVersion,
         [ValidateSet('iso','ms')][string]$Mode='iso',[switch]$Guarded)
     if(![IO.Path]::IsPathFullyQualified($Directory)){throw 'Recycle send output must be absolute'}
@@ -33,7 +33,7 @@
     }
     $typePath=Join-Path $Directory 'types.h';[IO.File]::WriteAllText($typePath,($types -join "`n"),$utf8)
     $callout=Join-Path $Directory 'callout-observe.h';$lines=@('static VOID RcsSdkComplete(NDIS_HANDLE,NET_BUFFER_LIST *,ULONG);','#define NdisMSendNetBufferListsComplete RcsSdkComplete',('#include "'+(Join-Path $script:RepoRoot 'driver/v2/ndis_callouts.h').Replace('\','/')+'"'),'#undef NdisMSendNetBufferListsComplete');[IO.File]::WriteAllText($callout,($lines -join "`n")+"`n",$utf8)
-    $send=Join-Path $Directory 'send-observe.h';$lines=@('static PB_RESULT RcsReserve(PB_POOL *,PB_TOKEN *);','static VOID RcsReject(TUN_CTX *,uint64_t,NET_BUFFER_LIST *,NET_BUFFER *,NDIS_STATUS,ULONG,ULONG,ULONG,const PB_SEND_FAILURE *,ULONG,ULONG,ULONG,PB_KERNEL_QUEUE *,ULONG);','#pragma push_macro("PbV2RejectSend")','#undef PbV2RejectSend','#define PbV2RejectSend RcsReject','#define PbPoolReserve RcsReserve',('#include "'+(Join-Path $script:RepoRoot 'driver/v2/session_send.h').Replace('\','/')+'"'),'#undef PbPoolReserve','#pragma pop_macro("PbV2RejectSend")');[IO.File]::WriteAllText($send,($lines -join "`n")+"`n",$utf8)
+    $send=Join-Path $Directory 'send-observe.h';$lines=@('static PB_RESULT RcsReserve(PB_POOL *,PB_TOKEN *);','static VOID RcsSharedRelease(SRWLOCK *,KIRQL);','static VOID RcsReject(TUN_CTX *,uint64_t,NET_BUFFER_LIST *,NET_BUFFER *,NDIS_STATUS,ULONG,ULONG,ULONG,const PB_SEND_FAILURE *,ULONG,ULONG,ULONG,PB_KERNEL_QUEUE *,ULONG);','#pragma push_macro("PbV2RejectSend")','#undef PbV2RejectSend','#define PbV2RejectSend RcsReject','#define PbPoolReserve RcsReserve','#pragma push_macro("ExReleaseSpinLockShared")','#undef ExReleaseSpinLockShared','#define ExReleaseSpinLockShared RcsSharedRelease',('#include "'+(Join-Path $script:RepoRoot 'driver/v2/session_send.h').Replace('\','/')+'"'),'#pragma pop_macro("ExReleaseSpinLockShared")','#undef PbPoolReserve','#pragma pop_macro("PbV2RejectSend")');[IO.File]::WriteAllText($send,($lines -join "`n")+"`n",$utf8)
     $controlSource=Join-Path $script:RepoRoot 'tests/model/control_batch32_tests.c';$controlHash='871a9469fb0d5c20433e5dcc853e2178818b161b6134143aeda38e5dd3dccf53'
     if((Get-FileHash $controlSource).Hash.ToLowerInvariant() -cne $controlHash){throw 'Frozen control host changed; review recycle send'}
     $controlOriginal=Join-Path $Directory 'control-host-original.c';[IO.File]::WriteAllBytes($controlOriginal,[IO.File]::ReadAllBytes($controlSource))

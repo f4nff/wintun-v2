@@ -31,6 +31,7 @@ if ($Stage -eq 'Tests') {
         Invoke-TestTool 'python.exe' @('tests\packet\test_retry_revalidate_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
         Invoke-TestTool 'python.exe' @('tests\packet\test_coalesce_limit_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
         Invoke-TestTool 'python.exe' @('tests\packet\test_tcp_zero_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
+        Invoke-TestTool 'python.exe' @('tests\packet\test_high_cursor_family32.py', "$outDir\pbpacket-tests.dll", "$ipVersion")
     }
     Invoke-BuildTool (Join-Path $script:SdkBin 'rc.exe') (@('/nologo',"/I$script:RepoRoot\include", "/fo$objectDir\core-tests.res") + $script:VersionArguments + @('tools\build\artifact.rc'))
     Invoke-BuildTool 'cl.exe' (@('/nologo','/std:c17','/MT','/O2','/W4','/WX',"/Fo$objectDir\", 'common\v2_core.c','common\offload_policy.c','tests\model\core_tests.c') + $script:VersionArguments + @('/link',"/out:$outDir\pbcore-tests.exe", "$objectDir\core-tests.res"))

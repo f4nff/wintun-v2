@@ -10,7 +10,7 @@ function Build-DrainFaultCaptureTests {
         $parts+=@{name=$name;source=$source;source_sha256=(Get-FileHash $source).Hash.ToLowerInvariant();offset=0;length=[IO.File]::ReadAllText($source).Length;path=$path;sha256=(Get-FileHash $path).Hash.ToLowerInvariant();compiled_path=$source}
     }
     $frozen=[ordered]@{
-        'tests\model\drain_boundary_tests.c'='4fd8afe2b998c6ca628ff05fa266b689e4602be4e68109a477cc5f3001fa7df5'
+        'tests\model\drain_boundary_tests.c'='50753c442cbeaaaa3956cc27d9884cb93fbe316a42953f387514f530466bc4a8'
         'tests\model\kernel_nbl_fixture.h'='c236a169004e4851111c1000353b85685dbe92b32191e8cb28509989f19d0eb3'
     }
     $hosts=@();foreach($relative in $frozen.Keys){

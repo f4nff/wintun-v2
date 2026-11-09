@@ -1329,3 +1329,303 @@ fn batch32_ipv4_gso_prefix_retirement_keeps_rebased_tail_and_reused_slot_indepen
 fn batch32_ipv6_gso_prefix_retirement_keeps_rebased_tail_and_reused_slot_independent() {
     check_batch32_gso_prefix_retirement_keeps_rebased_tail_and_reused_slot_independent(6);
 }
+
+fn check_batch32_commit_validation_failure_keeps_loans_for_corrected_retry(ip: u8) {
+    type Take = unsafe extern "C" fn(raw::Native, u32, *mut raw::Descriptor, u32, *mut u32) -> u32;
+    type Complete = unsafe extern "C" fn(raw::Native, u32, *const raw::Descriptor, u32) -> u32;
+    for protocol in [6, 17] {
+        let mut session = fixture_with_config(Config { queues: 1, slots: 32, ring_capacity: 32, ..Config::default() });
+        let take: Take = unsafe { symbol(&session.library, c"PbTestTake") };
+        let complete: Complete = unsafe { symbol(&session.library, c"PbTestComplete") };
+        let counter = Batch32Counter::attach(&mut session);
+        {
+            let q = session.queue(0).unwrap();
+            let packets: Vec<Vec<u8>> = (0..32).map(|i| batch32_packet(ip, protocol, &batch32_payload(0xb2, i, 64),
+                0xffff_fff0u32.wrapping_add((i * 64) as u32), i as u16, 0x18)).collect();
+            let mut reserved = q.reserve(32).unwrap();
+            assert_eq!(reserved.len(), 32);
+            let addresses: Vec<_> = reserved.items.iter().map(|lease| lease.data).collect();
+            let tokens: Vec<_> = reserved.items.iter().map(|lease| lease.descriptor.token).collect();
+            for (i, packet) in packets.iter().enumerate() {
+                let data = reserved.data_mut(i).unwrap();
+                assert_eq!(data.as_mut_ptr(), addresses[i]);
+                data[..packet.len()].copy_from_slice(packet);
+                data[packet.len()..packet.len()+16].fill(0xa5);
+                if i != 31 { reserved.set_length(i, packet.len()).unwrap(); }
+            }
+            let metadata: Vec<_> = reserved.items.iter().map(|lease| format!("{:?}", lease.descriptor)).collect();
+            assert_eq!(reserved.items[31].descriptor.length, 0);
+            assert_eq!(reserved.commit(), Err(Error(1)));
+            assert_eq!(reserved.len(), 32);
+            let state = session.close_progress().unwrap();
+            assert_eq!((state.user_leases, state.published), (32, 0));
+            BATCH32_CALLS.with(|cell| {
+                let calls = cell.get();
+                assert_eq!((calls.commit_calls, calls.commit_requested, calls.commit_accepted,
+                    calls.commit_last_result, calls.commit_last_accepted), (1, 32, 0, 1, 0));
+            });
+            for (i, packet) in packets.iter().enumerate() {
+                assert_eq!(format!("{:?}", reserved.items[i].descriptor), metadata[i]);
+                assert_eq!(reserved.items[i].descriptor.token, tokens[i]);
+                let data = reserved.data_mut(i).unwrap();
+                assert_eq!(data.as_mut_ptr(), addresses[i]);
+                assert_eq!(&data[..packet.len()], packet);
+                assert_eq!(&data[packet.len()..packet.len()+16], &[0xa5;16]);
+            }
+            let mut descriptors = [raw::Descriptor::default(); 32];
+            let mut count = u32::MAX;
+            assert_eq!(unsafe { take(session.pointer().unwrap(), 0, descriptors.as_mut_ptr(), 32, &mut count) }, raw::EMPTY);
+            assert_eq!(count, 0);
+            reserved.set_length(31, packets[31].len()).unwrap();
+            assert_eq!(reserved.commit().unwrap(), 32);
+            assert!(reserved.is_empty());
+            let state = session.close_progress().unwrap();
+            assert_eq!((state.user_leases, state.published), (0, 32));
+            assert_eq!(unsafe { take(session.pointer().unwrap(), 0, descriptors.as_mut_ptr(), 32, &mut count) }, raw::OK);
+            assert_eq!(count, 32);
+            for (i, descriptor) in descriptors.iter().enumerate() {
+                assert_eq!(descriptor.token, tokens[i]);
+                assert_eq!(descriptor.length as usize, packets[i].len());
+                let peer_packet = unsafe { std::slice::from_raw_parts(addresses[i], descriptor.length as usize) };
+                assert_eq!(peer_packet, packets[i]);
+            }
+            assert_eq!(unsafe { complete(session.pointer().unwrap(), 0, descriptors.as_ptr(), 32) }, raw::OK);
+            assert_eq!(q.completions(32).unwrap().len(), 32);
+            let reused = q.reserve(32).unwrap();
+            assert_eq!(reused.len(), 32);
+            // ReserveBatch does not promise slot order. Match each new loan
+            // to its original slot rather than the caller's batch index.
+            let mut seen_slots = [false; 32];
+            for lease in &reused.items {
+                let slot = lease.descriptor.token.slot as usize;
+                assert!(slot < seen_slots.len() && !seen_slots[slot]);
+                seen_slots[slot] = true;
+                let original = tokens.iter().position(|token| token.slot == lease.descriptor.token.slot).unwrap();
+                assert_eq!(lease.descriptor.token, raw::Token { generation: 2, ..tokens[original] });
+                assert_eq!(lease.data, addresses[original]);
+            }
+            assert!(seen_slots.iter().all(|seen| *seen));
+            drop(reused);
+            assert_eq!((session.close_progress().unwrap().user_leases, session.close_progress().unwrap().published), (0, 0));
+        }
+        let calls = counter.finish(&mut session);
+        assert_eq!((calls.reserve_calls, calls.reserve_requested, calls.reserve_accepted), (2, 64, 64));
+        assert_eq!((calls.commit_calls, calls.commit_requested, calls.commit_accepted,
+            calls.commit_last_result, calls.commit_last_accepted), (2, 64, 32, raw::OK, 32));
+        assert_eq!((calls.cancel_calls, calls.cancel_requested, calls.cancel_succeeded), (1, 32, 32));
+        assert_eq!((calls.writer_calls, calls.receive_calls, calls.release_calls), (0, 0, 0));
+        session.close(1000).unwrap();
+        println!("COMMIT_RETRY32 ip={ip} protocol={protocol} invalid32_accepted0 retry32_accepted32 payloads_unchanged32 generation2_cancel32 reserves2 commits2 cancel1 writer0 loans0 published0");
+    }
+}
+
+#[test]
+fn batch32_ipv4_commit_validation_failure_keeps_loans_for_corrected_retry() { check_batch32_commit_validation_failure_keeps_loans_for_corrected_retry(4); }
+#[test]
+fn batch32_ipv6_commit_validation_failure_keeps_loans_for_corrected_retry() { check_batch32_commit_validation_failure_keeps_loans_for_corrected_retry(6); }
+
+fn check_batch32_plain_receive_rejects_copied_tokens_before_prefix_reuse(ip: u8) {
+    for protocol in [6, 17] {
+        let mut session = fixture_with_config(Config { queues: 1, slots: 32, ring_capacity: 32, ..Config::default() });
+        let counter = Batch32Counter::attach(&mut session);
+        {
+            let q = session.queue(0).unwrap();
+            let packets: Vec<Vec<u8>> = (0..32).map(|i| batch32_packet(ip, protocol, &batch32_payload(0xa1, i, 64),
+                0xffff_fff0u32.wrapping_add((i * 64) as u32), i as u16, 0x18)).collect();
+            for packet in &packets { assert_eq!(inject(&session, packet, raw::PLAIN, 0), raw::OK); }
+            let mut received = q.receive(32).unwrap();
+            assert_eq!(received.len(), 32);
+            let tokens: Vec<_> = (0..32).map(|i| received.metadata(i).unwrap().token).collect();
+            let addresses: Vec<_> = (0..32).map(|i| received.data(i).unwrap().as_ptr() as usize).collect();
+            let metadata: Vec<_> = (0..32).map(|i| format!("{:?}", received.metadata(i).unwrap())).collect();
+            // This is a read-only hosted layout witness. No ring cursor or
+            // private count is changed to manufacture backpressure.
+            let region_address = addresses[0].checked_sub(received.metadata(0).unwrap().data_offset as usize).unwrap();
+            assert_eq!(region_address & 63, 0);
+            let region = region_address as *const u8;
+            let layout = unsafe { ptr::read(region.cast::<raw::Layout>()) };
+            assert_eq!((layout.size as usize, layout.queues, layout.slots, layout.capacity, layout.block_size),
+                (size_of::<raw::Layout>(), 1, 32, 32, 65536));
+            assert_eq!(layout.queue[0].rings[1] & 63, 0);
+            assert!(layout.queue[0].rings[1] as usize + 128 <= layout.region_size as usize);
+            let recycle = unsafe { region.add(layout.queue[0].rings[1] as usize) };
+            let cursors = || unsafe { (ptr::read_volatile(recycle.cast::<u64>()), ptr::read_volatile(recycle.add(64).cast::<u64>())) };
+            assert_eq!(cursors(), (0, 0));
+            // Unsafe raw ABI misuse is confined to independent copied tokens.
+            // Neither Rust lease metadata nor borrowed payload is modified.
+            for duplicate in [false, true] {
+                let mut bad = tokens.clone();
+                if duplicate { bad[31] = bad[0]; } else { bad[31].epoch = bad[31].epoch.wrapping_add(1); }
+                let mut accepted = u32::MAX;
+                let result = unsafe { session.library.api.release_batch.unwrap()(q.native.as_ptr(), bad.as_ptr(), 32, &mut accepted) };
+                assert_eq!((result, accepted), (if duplicate { 1 } else { 5 }, 0));
+                assert_eq!(cursors(), (0, 0));
+                assert_eq!(received.len(), 32);
+                let progress = session.close_progress().unwrap();
+                assert_eq!((progress.user_leases, progress.published), (32, 0));
+                for (i, packet) in packets.iter().enumerate() {
+                    assert_eq!(received.data(i).unwrap().as_ptr() as usize, addresses[i]);
+                    assert_eq!(received.data(i).unwrap(), packet);
+                    assert_eq!(format!("{:?}", received.metadata(i).unwrap()), metadata[i]);
+                }
+            }
+            // From here on, never read a transferred gen1 prefix address;
+            // only the copied tokens and addresses survive as test metadata.
+            assert_eq!(received.release_prefix(31).unwrap(), 31);
+            assert_eq!((received.len(), cursors()), (1, (31, 0)));
+            assert_eq!(received.metadata(0).unwrap().token, tokens[31]);
+            assert_eq!(received.data(0).unwrap().as_ptr() as usize, addresses[31]);
+            assert_eq!(received.data(0).unwrap(), packets[31]);
+            assert_eq!(format!("{:?}", received.metadata(0).unwrap()), metadata[31]);
+            let replacements: Vec<Vec<u8>> = (0..31).map(|i| batch32_packet(ip, protocol, &batch32_payload(0xb2, i, 64),
+                0x1234_0000u32.wrapping_add((i * 64) as u32), (i + 100) as u16, 0x18)).collect();
+            for packet in &replacements { assert_eq!(inject(&session, packet, raw::PLAIN, 0), raw::OK); }
+            assert_eq!(cursors(), (31, 31));
+            let mut reused = q.receive(32).unwrap();
+            assert_eq!(reused.len(), 31);
+            let mut seen = [false; 32];
+            for (i, packet) in replacements.iter().enumerate() {
+                let token = reused.metadata(i).unwrap().token;
+                let original = tokens[..31].iter().position(|old| old.slot == token.slot).unwrap();
+                let slot = token.slot as usize;
+                assert!(slot < seen.len() && !seen[slot]); seen[slot] = true;
+                assert_eq!(token, raw::Token { generation: 2, ..tokens[original] });
+                assert_eq!(reused.data(i).unwrap().as_ptr() as usize, addresses[original]);
+                assert_eq!(reused.data(i).unwrap(), packet);
+            }
+            assert_eq!(seen.iter().filter(|seen| **seen).count(), 31);
+            assert!(!seen[tokens[31].slot as usize]);
+            assert_eq!(session.close_progress().unwrap().user_leases, 32);
+            assert_eq!(received.data(0).unwrap(), packets[31]);
+            assert_eq!(format!("{:?}", received.metadata(0).unwrap()), metadata[31]);
+            assert_eq!(received.release().unwrap(), 1);
+            assert!(received.is_empty());
+            for (i, packet) in replacements.iter().enumerate() { assert_eq!(reused.data(i).unwrap(), packet); }
+            assert_eq!(reused.release().unwrap(), 31);
+            assert!(reused.is_empty());
+            assert_eq!(cursors(), (63, 31));
+        }
+        let calls = counter.finish(&mut session);
+        assert_eq!((calls.receive_calls, calls.receive_requested, calls.receive_accepted), (2, 64, 63));
+        assert_eq!((calls.release_calls, calls.release_requested), (5, 127));
+        assert_eq!((calls.reserve_calls, calls.commit_calls, calls.cancel_calls, calls.writer_calls), (0, 0, 0, 0));
+        assert_eq!(session.close_progress().unwrap().user_leases, 0);
+        session.close(1000).unwrap();
+        println!("RECEIVE_TOKEN_RETRY32 ip={ip} protocol={protocol} invalid_last_epoch_stale1 duplicate_invalid1 accepted0 prefix31 tail1 reused31 generation2 release_calls5 returned63 loans0");
+    }
+}
+
+#[test]
+fn batch32_ipv4_plain_receive_rejects_copied_tokens_before_prefix_reuse() { check_batch32_plain_receive_rejects_copied_tokens_before_prefix_reuse(4); }
+#[test]
+fn batch32_ipv6_plain_receive_rejects_copied_tokens_before_prefix_reuse() { check_batch32_plain_receive_rejects_copied_tokens_before_prefix_reuse(6); }
+
+fn check_batch32_fault_drop_keeps_other_direction_borrowed_and_native_barrier(ip: u8) {
+    type Complete = unsafe extern "C" fn(raw::Native, u32, *const raw::Descriptor, u32) -> u32;
+    for protocol in [6, 17] {
+        for receive_first in [false, true] {
+            let mut session = fixture_with_config(Config { queues: 1, slots: 32, ring_capacity: 32, ..Config::default() });
+            let complete: Complete = unsafe { symbol(&session.library, c"PbTestComplete") };
+            let counter = Batch32Counter::attach(&mut session);
+            {
+                let q = session.queue(0).unwrap();
+                let packets: [Vec<Vec<u8>>; 2] = std::array::from_fn(|direction| {
+                    (0..32).map(|index| batch32_packet(ip, protocol, &batch32_payload(0xa1 + direction as u8, index, 64),
+                        0xffff_fff0u32.wrapping_add((index * 64) as u32), index as u16, 0x18)).collect()
+                });
+                for packet in &packets[0] { assert_eq!(inject(&session, packet, raw::PLAIN, 0), raw::OK); }
+                let mut received = q.receive(32).unwrap();
+                let mut reserved = q.reserve(32).unwrap();
+                assert_eq!((received.len(), reserved.len()), (32, 32));
+                let rx_addresses: Vec<_> = (0..32).map(|i| received.data(i).unwrap().as_ptr() as usize).collect();
+                let tx_addresses: Vec<_> = reserved.items.iter().map(|lease| lease.data as usize).collect();
+                let rx_metadata: Vec<_> = (0..32).map(|i| format!("{:?}", received.metadata(i).unwrap())).collect();
+                let tx_tokens: Vec<_> = reserved.items.iter().map(|lease| lease.descriptor.token).collect();
+                for (index, packet) in packets[1].iter().enumerate() {
+                    reserved.data_mut(index).unwrap()[..packet.len()].copy_from_slice(packet);
+                    reserved.set_length(index, packet.len()).unwrap();
+                }
+                assert_eq!(session.close_progress().unwrap().user_leases, 64);
+                assert_eq!(received.release_prefix(1).unwrap(), 1);
+                reserved.cancel(0).unwrap();
+                assert_eq!((received.len(), reserved.len()), (31, 31));
+                assert_eq!(session.close_progress().unwrap().user_leases, 62);
+                // The returned prefixes are no longer borrowed. Only copied
+                // integer addresses/metadata remain; they are not dereferenced.
+                let verify_received = |batch: &ReceivedBatch<'_>| {
+                    assert_eq!(batch.len(), 31);
+                    for index in 0..31 {
+                        assert_eq!(batch.data(index).unwrap().as_ptr() as usize, rx_addresses[index+1]);
+                        assert_eq!(batch.data(index).unwrap(), packets[0][index+1]);
+                        assert_eq!(format!("{:?}", batch.metadata(index).unwrap()), rx_metadata[index+1]);
+                    }
+                };
+                let verify_reserved = |batch: &mut ReservedBatch<'_>| {
+                    assert_eq!(batch.len(), 31);
+                    for index in 0..31 {
+                        assert_eq!(batch.items[index].descriptor.token, tx_tokens[index+1]);
+                        assert_eq!(batch.items[index].data as usize, tx_addresses[index+1]);
+                        assert_eq!(batch.items[index].descriptor.length as usize, packets[1][index+1].len());
+                        assert_eq!(&batch.data_mut(index).unwrap()[..packets[1][index+1].len()], packets[1][index+1]);
+                    }
+                };
+                verify_received(&received); verify_reserved(&mut reserved);
+                active(&session, 1);
+                // Defensive shared-wire input: actual public Poll validates
+                // the wrong epoch and calls actual FaultSession. No PB result,
+                // private Fatal, slot or DLL loan state is forged. active()
+                // controls only the hosted native-reference boundary.
+                let mut bad = raw::Descriptor::default();
+                bad.token.epoch = session.epoch.wrapping_add(1);
+                bad.token.generation = 1;
+                assert_eq!(unsafe { complete(session.pointer().unwrap(), 0, &bad, 1) }, raw::OK);
+                assert_eq!(q.completions(1).unwrap_err(), Error(4));
+                assert_eq!(session.prepare_close(0), Err(Error(raw::BUSY)));
+                let progress = session.close_progress().unwrap();
+                assert_eq!(progress.user_leases, 62);
+                assert!(progress.retained_bytes > 0);
+                assert_eq!(progress.published, 0);
+                verify_received(&received); verify_reserved(&mut reserved);
+                let mut received = Some(received);
+                let mut reserved = Some(reserved);
+                if receive_first {
+                    drop(received.take().unwrap());
+                    assert_eq!(session.close_progress().unwrap().user_leases, 31);
+                    verify_reserved(reserved.as_mut().unwrap());
+                    assert_eq!(session.prepare_close(0), Err(Error(raw::BUSY)));
+                    drop(reserved.take().unwrap());
+                } else {
+                    drop(reserved.take().unwrap());
+                    assert_eq!(session.close_progress().unwrap().user_leases, 31);
+                    verify_received(received.as_ref().unwrap());
+                    assert_eq!(session.prepare_close(0), Err(Error(raw::BUSY)));
+                    drop(received.take().unwrap());
+                }
+                assert!(received.is_none() && reserved.is_none());
+                assert_eq!(session.close_progress().unwrap().user_leases, 0);
+                assert_eq!(session.prepare_close(0), Err(Error(raw::QUARANTINED)));
+                let progress = session.close_progress().unwrap();
+                assert_eq!(progress.user_leases, 0);
+                assert!(progress.retained_bytes > 0);
+                assert_eq!(progress.published, 0);
+                assert_eq!(session.status().unwrap().active_references, 1);
+            }
+            let calls = counter.finish(&mut session);
+            assert_eq!((calls.receive_calls, calls.receive_requested, calls.receive_accepted), (1, 32, 32));
+            assert_eq!((calls.reserve_calls, calls.reserve_requested, calls.reserve_accepted), (1, 32, 32));
+            assert_eq!((calls.release_calls, calls.release_requested), (2, 32));
+            assert_eq!((calls.cancel_calls, calls.cancel_requested, calls.cancel_succeeded), (2, 32, 32));
+            assert_eq!((calls.commit_calls, calls.writer_calls), (0, 0));
+            active(&session, 0);
+            session.prepare_close(1000).unwrap();
+            assert_eq!(session.status().unwrap().active_references, 0);
+            session.close(1000).unwrap();
+            println!("FAULT_DROP62 ip={ip} protocol={protocol} receive_first={receive_first} initial64 prefix1_cancel1 remaining62 first_drop31 second_drop0 native_active1_quarantined release2 cancel2 writer0 commit0");
+        }
+    }
+}
+
+#[test]
+fn batch32_ipv4_fault_drop_keeps_other_direction_borrowed_and_native_barrier() { check_batch32_fault_drop_keeps_other_direction_borrowed_and_native_barrier(4); }
+#[test]
+fn batch32_ipv6_fault_drop_keeps_other_direction_borrowed_and_native_barrier() { check_batch32_fault_drop_keeps_other_direction_borrowed_and_native_barrier(6); }

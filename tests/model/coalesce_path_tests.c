@@ -27,7 +27,7 @@ static PB_KERNEL_QUEUE *Queue;
 uint32_t PbChecksumAdd(uint32_t sum,const uint8_t *data,uint32_t length)
 {ChecksumBytes+=length;return ActualChecksumAdd(sum,data,length);}
 static VOID CopySnapshot(VOID *dst,const VOID *src,SIZE_T length)
-{CHECK(dst==Queue->Scratch && length<=PB_BLOCK_SIZE);ScratchBytes+=length;memcpy(dst,src,length);}
+{CHECK(Queue);ULONG_PTR offset=(ULONG_PTR)dst-(ULONG_PTR)Queue->Scratch;CHECK(offset<=PB_BLOCK_SIZE && length<=PB_BLOCK_SIZE-offset);ScratchBytes+=length;memcpy(dst,src,length);}
 static PB_PACKET_STATUS Begin(PB_COALESCE *s,uint8_t *output,uint32_t capacity,const uint8_t *data,uint32_t length)
 {Begins++;PB_PACKET_STATUS r=PbCoalesceBegin(s,output,capacity,data,length);if(r==PB_PACKET_OK) OutputBytes+=length;return r;}
 static PB_PACKET_STATUS Append(PB_COALESCE *s,const uint8_t *data,uint32_t length)
@@ -96,7 +96,7 @@ static VOID Run(ULONG ip,ULONG protocol,ULONG mask,ULONG length,BOOLEAN busy,BOO
 #ifdef PB_COALESCE_BASELINE
         CHECK(Begins==31 && !Appends && ScratchBytes==31ull*length && OutputBytes==31ull*length && ChecksumBytes>0);
 #else
-        CHECK(!Begins && !Appends && ScratchBytes==31ull*length && !OutputBytes && !ChecksumBytes);
+        CHECK(!Begins && !Appends && ScratchBytes==31ull*(length<40?length:40) && !OutputBytes && !ChecksumBytes);
 #endif
         CHECK(groups==32 && !ctx.Probe.RscAborts);
     } else if(invalid) CHECK(groups==32 && Begins==31 && !Appends && !OutputBytes);

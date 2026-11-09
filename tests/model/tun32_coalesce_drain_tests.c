@@ -41,7 +41,8 @@ static VOID ObserveIndicate(VOID *adapter,NET_BUFFER_LIST *lists,ULONG n,ULONG f
 static VOID ObserveNblCopy(VOID *dst,const VOID *src,SIZE_T n)
 {if(n==40){++PrefixCopies;PrefixBytes+=(ULONG)n;}else if(n==sizeof(PB_DESCRIPTOR) || n==2*sizeof(PB_DESCRIPTOR)){RecordBytes+=(ULONG)n;}else ++OtherNblCopies;memcpy(dst,src,n);}
 static VOID ObserveSnapshot(VOID *dst,const VOID *src,SIZE_T n)
-{CHECK(Current && dst==Current->Queues[0].Scratch);PrivateBytes+=n;memcpy(dst,src,n);}
+{CHECK(Current && Current->Queues[0].Scratch);uintptr_t offset=(uintptr_t)dst-(uintptr_t)Current->Queues[0].Scratch;
+ CHECK(offset<PB_BLOCK_SIZE && n<=PB_BLOCK_SIZE-offset);PrivateBytes+=n;memcpy(dst,src,n);}
 static PB_PACKET_STATUS ObserveBegin(PB_COALESCE *s,uint8_t *out,uint32_t capacity,const uint8_t *p,uint32_t n)
 {++Begins;PB_PACKET_STATUS r=PbCoalesceBegin(s,out,capacity,p,n);if(r==PB_PACKET_OK)OutputBytes+=n;return r;}
 static PB_PACKET_STATUS ObserveAppend(PB_COALESCE *s,const uint8_t *p,uint32_t n)

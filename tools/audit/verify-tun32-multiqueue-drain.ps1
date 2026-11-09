@@ -44,7 +44,7 @@ function Assert-NdrBuild($build){
     Require-NdrHash $build.host $build.host_sha256;Require-NdrHash $build.observer $build.observer_sha256
     $test=Join-Path $script:RepoRoot 'tests/model/tun32_multiqueue_drain_tests.c'
     if($build.test -cne $test){throw 'Multiqueue test source differs'};Require-NdrHash $test $build.test_sha256
-    $hosts=[ordered]@{'tests/model/drain_boundary_tests.c'='4fd8afe2b998c6ca628ff05fa266b689e4602be4e68109a477cc5f3001fa7df5';'tests/model/kernel_nbl_fixture.h'='c236a169004e4851111c1000353b85685dbe92b32191e8cb28509989f19d0eb3'}
+    $hosts=[ordered]@{'tests/model/drain_boundary_tests.c'='50753c442cbeaaaa3956cc27d9884cb93fbe316a42953f387514f530466bc4a8';'tests/model/kernel_nbl_fixture.h'='c236a169004e4851111c1000353b85685dbe92b32191e8cb28509989f19d0eb3'}
     Assert-NdrSet @($build.inputs|ForEach-Object {$_.relative}) @($hosts.Keys) 'Multiqueue frozen input set differs'
     foreach($frozen in $build.inputs){
         $source=Join-Path $script:RepoRoot $frozen.relative;$copy=Join-Path $place ('original-'+[IO.Path]::GetFileName($source))

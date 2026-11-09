@@ -4,7 +4,7 @@ function Build-ReceiveAdmission32Tests {
     if(![IO.Path]::IsPathFullyQualified($Directory)){throw 'Receive admission output must be absolute'}
     if($script:SourceFingerprint -cnotmatch '^[a-f0-9]{64}$'){throw 'Receive admission requires shipping fingerprint'}
     New-Item -ItemType Directory -Path $Directory -Force|Out-Null;$utf8=[Text.UTF8Encoding]::new($false)
-    $hostSource=Join-Path $script:RepoRoot 'tests/model/drain_boundary_tests.c';$hostHash='4fd8afe2b998c6ca628ff05fa266b689e4602be4e68109a477cc5f3001fa7df5'
+    $hostSource=Join-Path $script:RepoRoot 'tests/model/drain_boundary_tests.c';$hostHash='50753c442cbeaaaa3956cc27d9884cb93fbe316a42953f387514f530466bc4a8'
     $kernel=Join-Path $script:RepoRoot 'tests/model/kernel_nbl_fixture.h';$kernelHash='c236a169004e4851111c1000353b85685dbe92b32191e8cb28509989f19d0eb3'
     if((Get-FileHash $hostSource).Hash.ToLowerInvariant() -cne $hostHash -or (Get-FileHash $kernel).Hash.ToLowerInvariant() -cne $kernelHash){throw 'Frozen admission DDI host changed'}
     $original=Join-Path $Directory 'drain-host-original.c';[IO.File]::WriteAllBytes($original,[IO.File]::ReadAllBytes($hostSource))

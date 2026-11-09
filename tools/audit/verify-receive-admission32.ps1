@@ -48,7 +48,7 @@ function Assert-RaBuild($build){
     $place=[IO.Path]::GetDirectoryName($build.path);$test=Join-Path $script:RepoRoot 'tests/model/receive_admission32_tests.c'
     if($build.path -cne (Join-Path $place 'receive-admission32.exe') -or $build.entry -cne (Join-Path $place 'entry.c') -or $build.test -cne $test){throw 'Receive admission output/test binding differs'}
     Require-RaHash $build.path $build.sha256;Require-RaHash $build.entry $build.entry_sha256;Require-RaHash $test $build.test_sha256
-    $hostSource=Join-Path $script:RepoRoot 'tests/model/drain_boundary_tests.c';$hostHash='4fd8afe2b998c6ca628ff05fa266b689e4602be4e68109a477cc5f3001fa7df5'
+    $hostSource=Join-Path $script:RepoRoot 'tests/model/drain_boundary_tests.c';$hostHash='50753c442cbeaaaa3956cc27d9884cb93fbe316a42953f387514f530466bc4a8'
     $kernel=Join-Path $script:RepoRoot 'tests/model/kernel_nbl_fixture.h';$kernelHash='c236a169004e4851111c1000353b85685dbe92b32191e8cb28509989f19d0eb3'
     if($build.host_source -cne $hostSource -or $build.host_source_sha256 -cne $hostHash -or $build.host_original_sha256 -cne $hostHash -or $build.host_original -cne (Join-Path $place 'drain-host-original.c') -or $build.host -cne (Join-Path $place 'drain-host.h') -or $build.observer -cne (Join-Path $place 'receive-observe.h') -or $build.kernel_source -cne $kernel -or $build.kernel_source_sha256 -cne $kernelHash){throw 'Receive admission original host binding differs'}
     Require-RaHash $hostSource $hostHash;Require-RaHash $kernel $kernelHash;Require-RaHash $build.host_original $hostHash;Require-RaHash $build.host $build.host_sha256;Require-RaHash $build.observer $build.observer_sha256

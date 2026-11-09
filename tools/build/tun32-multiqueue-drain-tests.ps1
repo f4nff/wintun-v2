@@ -4,7 +4,7 @@ function Build-Tun32MultiqueueDrainTests {
     if(![IO.Path]::IsPathFullyQualified($Directory)){throw 'Multiqueue drain output must be absolute'}
     if($script:SourceFingerprint -cnotmatch '^[a-f0-9]{64}$'){throw 'Multiqueue drain requires shipping fingerprint'}
     New-Item -ItemType Directory -Path $Directory -Force|Out-Null;$utf8=[Text.UTF8Encoding]::new($false)
-    $hosts=[ordered]@{'tests/model/drain_boundary_tests.c'='4fd8afe2b998c6ca628ff05fa266b689e4602be4e68109a477cc5f3001fa7df5';'tests/model/kernel_nbl_fixture.h'='c236a169004e4851111c1000353b85685dbe92b32191e8cb28509989f19d0eb3'}
+    $hosts=[ordered]@{'tests/model/drain_boundary_tests.c'='50753c442cbeaaaa3956cc27d9884cb93fbe316a42953f387514f530466bc4a8';'tests/model/kernel_nbl_fixture.h'='c236a169004e4851111c1000353b85685dbe92b32191e8cb28509989f19d0eb3'}
     $inputs=@();foreach($relative in $hosts.Keys){$source=Join-Path $script:RepoRoot $relative;$hash=(Get-FileHash $source).Hash.ToLowerInvariant();if($hash -cne $hosts[$relative]){throw "Frozen multiqueue host differs: $relative"};$copy=Join-Path $Directory ('original-'+[IO.Path]::GetFileName($source));[IO.File]::WriteAllBytes($copy,[IO.File]::ReadAllBytes($source));$inputs+=@{relative=$relative;source=$source;source_sha256=$hash;path=$copy;sha256=(Get-FileHash $copy).Hash.ToLowerInvariant()}}
     $source=Join-Path $script:RepoRoot 'tests/model/drain_boundary_tests.c';$body=[IO.File]::ReadAllText($source)
     $body=[regex]::Replace($body,'"([^"\r\n]*\.[ch])"',{param($m);'"'+[IO.Path]::GetFullPath((Join-Path (Split-Path $source) $m.Groups[1].Value)).Replace('\','/')+'"'})

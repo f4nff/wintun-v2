@@ -100,7 +100,8 @@ static LONG64 CountStatIncrement(volatile LONG64 *value)
 {if(StatTarget(value)) StatWrites++;return InterlockedIncrement64(value);}
 static VOID *CountRecordRead(NET_BUFFER_LIST *nbl) {StatRecordReads++;return nbl->Reserved[1];}
 static VOID CountSnapshot(VOID *dst,const VOID *src,SIZE_T length)
-{if(Current && dst==Current->Queues[0].Scratch) SnapshotBytes+=length;memcpy(dst,src,length);}
+{if(Current && Current->Queues[0].Scratch) {uintptr_t offset=(uintptr_t)dst-(uintptr_t)Current->Queues[0].Scratch;
+ if(offset<PB_BLOCK_SIZE) {CHECK(length<=PB_BLOCK_SIZE-offset);SnapshotBytes+=length;}}memcpy(dst,src,length);}
 #pragma push_macro("InterlockedAdd64")
 #pragma push_macro("InterlockedIncrement64")
 #pragma push_macro("NET_BUFFER_LIST_NEXT_NBL_EX")

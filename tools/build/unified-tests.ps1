@@ -153,6 +153,13 @@ Invoke-TestTool $sendDescribe.path @()
 . (Join-Path $PSScriptRoot 'retirement-hint32-tests.ps1')
 . (Join-Path $PSScriptRoot 'reference-handoff32-tests.ps1')
 . (Join-Path $PSScriptRoot 'reuse-terminal32-tests.ps1')
+. (Join-Path $PSScriptRoot 'coalesce-prefilter32-tests.ps1')
+. (Join-Path $PSScriptRoot 'cross-queue-fault32-tests.ps1')
+. (Join-Path $PSScriptRoot 'wait-postcheck32-tests.ps1')
+. (Join-Path $PSScriptRoot 'receive-rollback32-tests.ps1')
+. (Join-Path $PSScriptRoot 'poll-handoff32-tests.ps1')
+. (Join-Path $PSScriptRoot 'optional-coalesce32-tests.ps1')
+. (Join-Path $PSScriptRoot 'retire-retry32-tests.ps1')
 foreach($ipVersion in @(4,6)) {
     foreach($direction in @('send','receive')) {
         $tun32=Build-Tun32SysTests -Directory (Join-Path $dir "ipv$ipVersion-tun32-$direction") -Mode iso -Direction $direction -IpVersion $ipVersion
@@ -187,6 +194,7 @@ foreach($ipVersion in @(4,6)) {
     Invoke-TestTool $multiqueueDrain.path @()
     $crossQueue=Build-CrossQueuePrepare32Tests -Directory (Join-Path $dir "ipv$ipVersion-cross-queue-prepare32") -Mode iso -IpVersion $ipVersion
     Invoke-TestTool $crossQueue.path @($crossQueue.fixture)
+    Invoke-TestTool $crossQueue.path @($crossQueue.fixture,'--close-wait-failure32')
     $localRetirement=Build-LocalRetirement32Tests -Directory (Join-Path $dir "ipv$ipVersion-local-retirement32") -Mode iso -IpVersion $ipVersion
     Invoke-TestTool $localRetirement.path @($localRetirement.fixture)
     $completionArm=Build-CompletionArm32Tests -Directory (Join-Path $dir "ipv$ipVersion-completion-arm32") -Mode iso -IpVersion $ipVersion
@@ -205,12 +213,27 @@ foreach($ipVersion in @(4,6)) {
     Invoke-TestTool $policyAbandon.path @($policyAbandon.fixture)
     $recycleSend=Build-RecycleSend32Tests -Directory (Join-Path $dir "ipv$ipVersion-recycle-send32") -Mode iso -IpVersion $ipVersion
     Invoke-TestTool $recycleSend.path @()
+    Invoke-TestTool $recycleSend.path @('--late-pressure32')
     $retirementHint=Build-RetirementHint32Tests -Directory (Join-Path $dir "ipv$ipVersion-retirement-hint32") -Mode iso -IpVersion $ipVersion
     Invoke-TestTool $retirementHint.path @($retirementHint.fixture)
     $referenceHandoff=Build-ReferenceHandoff32Tests -Directory (Join-Path $dir "ipv$ipVersion-reference-handoff32") -Mode iso -IpVersion $ipVersion
     Invoke-TestTool $referenceHandoff.path @()
     $reuseTerminal=Build-ReuseTerminal32Tests -Directory (Join-Path $dir "ipv$ipVersion-reuse-terminal32") -Mode iso -IpVersion $ipVersion
     Invoke-TestTool $reuseTerminal.path @($reuseTerminal.fixture)
+    $coalescePrefilter=Build-CoalescePrefilter32Tests -Directory (Join-Path $dir "ipv$ipVersion-coalesce-prefilter32") -Mode iso -IpVersion $ipVersion
+    Invoke-TestTool $coalescePrefilter.path @()
+    $crossQueueFault=Build-CrossQueueFault32Tests -Directory (Join-Path $dir "ipv$ipVersion-cross-queue-fault32") -Mode iso -IpVersion $ipVersion
+    Invoke-TestTool $crossQueueFault.path @()
+    $waitPostcheck=Build-WaitPostcheck32Tests -Directory (Join-Path $dir "ipv$ipVersion-wait-postcheck32") -Mode iso -IpVersion $ipVersion
+    Invoke-TestTool $waitPostcheck.path @($waitPostcheck.fixture)
+    $receiveRollback=Build-ReceiveRollback32Tests -Directory (Join-Path $dir "ipv$ipVersion-receive-rollback32") -Mode iso -IpVersion $ipVersion
+    Invoke-TestTool $receiveRollback.path @()
+    $pollHandoff=Build-PollHandoff32Tests -Directory (Join-Path $dir "ipv$ipVersion-poll-handoff32") -Mode iso -IpVersion $ipVersion
+    Invoke-TestTool $pollHandoff.path @($pollHandoff.fixture)
+    $optionalCoalesce=Build-OptionalCoalesce32Tests -Directory (Join-Path $dir "ipv$ipVersion-optional-coalesce32") -Mode iso -IpVersion $ipVersion
+    Invoke-TestTool $optionalCoalesce.path @()
+    $retireRetry=Build-RetireRetry32Tests -Directory (Join-Path $dir "ipv$ipVersion-retire-retry32") -Mode iso -IpVersion $ipVersion
+    Invoke-TestTool $retireRetry.path @($retireRetry.fixture)
 }
 . (Join-Path $PSScriptRoot 'env-init-tests.ps1')
 foreach($maybeWow64 in @($false,$true)) {

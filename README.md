@@ -49,6 +49,11 @@ Api 构建还检查发布 DLL 的全部导出、旧导出序号及重复加载/�
 实施与验收边界见 [统一方案](docs/unified-driver-plan.md)。
 槽位重用竞态、兼容层批处理、唤醒与回收的复核及重放入口见 [槽位归还审计](docs/slot-reclamation-compat-audit.md)。
 SYS 的 MDL 映射参数、Win7/NX 兼容性和回收预算补充验证见 [MDL 兼容性复核](docs/slot-reclamation-mdl-review.md)。
+32 包合并预筛选的无效整包复制修复、IPv4/IPv6 独立测试及宿主 CPU 基准见 [合并预筛选成本复核](docs/coalesce-prefilter-cpu-review.md)。
+完成发布后的跨队列故障、SDK 等待返回后的停机覆盖及最大源跨度最后 32 段见 [后置检查与故障结算复核](docs/postwait-fault-highcursor-review.md)。
+接收构造失败时的 Pause 屏障、Poll32 的私有结算/Lifetime 交接及 Rust 提交失败重试见 [构造回滚与完成消费复核](docs/rollback-poll-ownership-review.md)。
+可选合并资源失败降级、停止后的32项归还修正重试及Rust前缀归还跨代重用见 [降级与归还重试复核](docs/degraded-retirement-retry-review.md)。
+满槽发送的合法晚归还、关闭等待失败后的恢复及Rust双向批次Fault析构见 [发送压力与关闭交接复核](docs/pressure-close-fault-drop-review.md)。
 依赖卸载期间的停机唤醒、等待失败及八队列并发归还验证见 [并发停机复核](docs/concurrent-stop-wait-review.md)。
 线程/进程终止等待失败后的所有权保持和回收验证见 [终止屏障复核](docs/termination-barrier-review.md)。
 异步管道取消、完成屏障、事件复位和装卸资源计数验证见 [异步 I/O 回收复核](docs/overlapped-drain-review.md)。
